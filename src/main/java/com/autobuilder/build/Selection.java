@@ -1,5 +1,6 @@
 package com.autobuilder.build;
 
+import com.autobuilder.Lang;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.AABB;
@@ -38,12 +39,12 @@ public final class Selection {
     }
 
     public static String describe() {
-        if (pos1 == null && pos2 == null) return "还没选区";
+        if (pos1 == null && pos2 == null) return Lang.t("sel.none");
         String a = pos1 == null ? "?" : pos1.toShortString();
         String b = pos2 == null ? "?" : pos2.toShortString();
-        if (!complete()) return "角1 " + a + "  角2 " + b;
+        if (!complete()) return Lang.t("sel.partial", a, b);
         AABB box = box();
-        return "角1 " + a + "  角2 " + b + "  尺寸 " + (int) box.getXsize() + "×" + (int) box.getYsize() + "×" + (int) box.getZsize();
+        return Lang.t("sel.full", a, b, (int) box.getXsize(), (int) box.getYsize(), (int) box.getZsize());
     }
 
     public static void clear() {

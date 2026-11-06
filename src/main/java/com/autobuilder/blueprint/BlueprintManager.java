@@ -1,5 +1,6 @@
 package com.autobuilder.blueprint;
 
+import com.autobuilder.Lang;
 import com.autobuilder.AutoBuilder;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -17,6 +18,11 @@ public final class BlueprintManager {
     public record Entry(String name, Path file) {
         public boolean builtin() {
             return file == null;
+        }
+
+        /** 列表里显示的名字：内置建筑显示翻译后的名字 */
+        public String display() {
+            return builtin() ? BuiltinPresets.displayName(name) : name;
         }
     }
 
@@ -48,6 +54,7 @@ public final class BlueprintManager {
     }
 
     public static Blueprint load(String name) throws IOException {
+        name = BuiltinPresets.canonical(name.trim());
         Blueprint bp = load0(name);
         bp.source = name;
         return bp;
@@ -56,7 +63,7 @@ public final class BlueprintManager {
     private static Blueprint load0(String name) throws IOException {
         if (name.startsWith(BuiltinPresets.PREFIX)) {
             Supplier<Blueprint> sup = BuiltinPresets.all().get(name.substring(BuiltinPresets.PREFIX.length()));
-            if (sup == null) throw new IOException("没有这个内置建筑: " + name);
+            if (sup == null) throw new IOException(Lang.t("err.no_builtin", name));
             return sup.get();
         }
         for (Entry e : list()) {
@@ -69,7 +76,7 @@ public final class BlueprintManager {
             int dot = n.lastIndexOf('.');
             if (dot > 0 && n.substring(0, dot).equalsIgnoreCase(name)) return BlueprintLoader.load(e.file());
         }
-        throw new IOException("找不到蓝图: " + name);
+        throw new IOException(Lang.t("err.not_found", name));
     }
 
     public static Map<String, Supplier<Blueprint>> builtins() {

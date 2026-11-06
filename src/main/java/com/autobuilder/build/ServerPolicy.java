@@ -1,5 +1,6 @@
 package com.autobuilder.build;
 
+import com.autobuilder.Lang;
 import java.util.Locale;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
@@ -57,7 +58,7 @@ public final class ServerPolicy {
             if (BuildController.state() == BuildController.State.RUNNING || BuildController.state() == BuildController.State.PAUSED) {
                 BuildController.stop();
             }
-            BuildController.msg("这个服务器禁止使用自动建造，AutoBuilder 已停用（预览和保存不受影响）", ChatFormatting.GOLD);
+            BuildController.msg(Lang.t("msg.server_disabled_notice"), ChatFormatting.GOLD);
         }
         return s.trim().equalsIgnoreCase(TOKEN);
     }

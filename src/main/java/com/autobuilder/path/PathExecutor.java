@@ -1,5 +1,6 @@
 package com.autobuilder.path;
 
+import com.autobuilder.Lang;
 import com.autobuilder.build.BuildController;
 import com.autobuilder.build.Geometry;
 import com.autobuilder.build.StateMatcher;
@@ -85,7 +86,7 @@ public final class PathExecutor {
 
     public String describe() {
         if (!hasPath()) return "";
-        return "寻路 " + (idx + 1) + "/" + path.size() + " " + path.get(idx).move();
+        return Lang.t("act.path", idx + 1, path.size(), path.get(idx).move());
     }
 
     private void fail() {

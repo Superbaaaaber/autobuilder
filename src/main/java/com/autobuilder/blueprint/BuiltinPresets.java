@@ -1,5 +1,6 @@
 package com.autobuilder.blueprint;
 
+import com.autobuilder.Lang;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -12,13 +13,27 @@ import net.minecraft.world.level.block.state.BlockState;
  * 建筑的“正面”（门）朝 +z（南），加载时会自动转向让正面对着玩家。
  */
 public final class BuiltinPresets {
-    public static final String PREFIX = "[内置]";
+    /** 内置建筑的名字是 builtin:cabin 这样的英文 id，显示名走翻译 */
+    public static final String PREFIX = "builtin:";
     private static final Map<String, Supplier<Blueprint>> PRESETS = new LinkedHashMap<>();
+    /** 1.2.1 及以前用中文名，断点存档里可能还是旧名字 */
+    private static final Map<String, String> LEGACY = Map.of(
+            "[内置]小木屋", "builtin:cabin", "[内置]瞭望塔", "builtin:tower", "[内置]围栏小院", "builtin:yard");
 
     static {
-        PRESETS.put("小木屋", BuiltinPresets::cabin);
-        PRESETS.put("瞭望塔", BuiltinPresets::tower);
-        PRESETS.put("围栏小院", BuiltinPresets::yard);
+        PRESETS.put("cabin", BuiltinPresets::cabin);
+        PRESETS.put("tower", BuiltinPresets::tower);
+        PRESETS.put("yard", BuiltinPresets::yard);
+    }
+
+    /** 旧的中文名换成现在的 id，其它原样返回 */
+    public static String canonical(String name) {
+        return LEGACY.getOrDefault(name, name);
+    }
+
+    /** builtin:cabin → [内置]小木屋 / [Built-in] Cabin */
+    public static String displayName(String name) {
+        return Lang.t("preset." + name.substring(PREFIX.length()));
     }
 
     private BuiltinPresets() {}
@@ -39,7 +54,7 @@ public final class BuiltinPresets {
 
     /** 7×7×7 小木屋：圆石地板、原木四角、木板墙、玻璃窗、木门、楼梯双坡屋顶 */
     static Blueprint cabin() {
-        Blueprint b = new Blueprint(PREFIX + "小木屋", 7, 7, 7);
+        Blueprint b = new Blueprint(Lang.t("preset.cabin"), 7, 7, 7);
         BlockState air = Blocks.AIR.defaultBlockState();
         BlockState planks = s("minecraft:oak_planks");
         BlockState log = s("minecraft:oak_log[axis=y]");
@@ -84,7 +99,7 @@ public final class BuiltinPresets {
 
     /** 5×12×5 石砖瞭望塔：内部梯子，顶层平台带栅栏和灯笼（考验爬高和脚手架） */
     static Blueprint tower() {
-        Blueprint b = new Blueprint(PREFIX + "瞭望塔", 5, 12, 5);
+        Blueprint b = new Blueprint(Lang.t("preset.tower"), 5, 12, 5);
         BlockState air = Blocks.AIR.defaultBlockState();
         BlockState bricks = s("minecraft:stone_bricks");
         fill(b, 0, 0, 0, 4, 0, 4, bricks);
@@ -122,7 +137,7 @@ public final class BuiltinPresets {
 
     /** 9×2×9 围栏小院：一圈橡木栅栏、南侧栅栏门、四角火把 */
     static Blueprint yard() {
-        Blueprint b = new Blueprint(PREFIX + "围栏小院", 9, 2, 9);
+        Blueprint b = new Blueprint(Lang.t("preset.yard"), 9, 2, 9);
         BlockState fence = s("minecraft:oak_fence");
         for (int z = 0; z <= 8; z++) {
             for (int x = 0; x <= 8; x++) {

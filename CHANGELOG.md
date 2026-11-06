@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0
+
+- English translation: every screen, the HUD, chat messages, `/ab help` and the settings follow the game language (English / 简体中文).
+- Built-in blueprints now have English ids (`builtin:cabin`, `builtin:tower`, `builtin:yard`) so they're easy to type; the old Chinese names still work and saved progress carries over.
+- The config file comments are now in English; the settings screen shows translated tooltips.
+
 ## 1.2.1
 
 - Fix: a finished build was saved again as a resume point, so re-entering the world said there was an unfinished build.

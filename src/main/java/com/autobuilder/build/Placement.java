@@ -1,5 +1,6 @@
 package com.autobuilder.build;
 
+import com.autobuilder.Lang;
 import com.autobuilder.blueprint.Blueprint;
 import java.util.List;
 import net.minecraft.core.BlockPos;
@@ -168,11 +169,10 @@ public final class Placement {
             case COUNTERCLOCKWISE_90 -> "270°";
         };
         String mir = switch (mirror) {
-            case NONE -> "无";
-            case LEFT_RIGHT -> "南北翻转";
-            case FRONT_BACK -> "东西翻转";
+            case NONE -> Lang.t("mirror.none");
+            case LEFT_RIGHT -> Lang.t("mirror.lr");
+            case FRONT_BACK -> Lang.t("mirror.fb");
         };
-        return bp.name + " @ " + origin.toShortString() + "  旋转 " + rot + "  镜像 " + mir
-                + "  尺寸 " + sizeX() + "×" + sizeY() + "×" + sizeZ();
+        return Lang.t("placement.describe", bp.name, origin.toShortString(), rot, mir, sizeX(), sizeY(), sizeZ());
     }
 }

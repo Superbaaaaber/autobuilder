@@ -1,5 +1,6 @@
 package com.autobuilder.gui;
 
+import com.autobuilder.Lang;
 import com.autobuilder.blueprint.Blueprint;
 import com.autobuilder.blueprint.BlueprintManager;
 import com.autobuilder.build.BuildController;
@@ -22,7 +23,7 @@ public class BuilderScreen extends Screen {
     private String message = "";
 
     public BuilderScreen() {
-        super(Component.literal("AutoBuilder 自动建造"));
+        super(Component.literal(Lang.t("screen.title")));
     }
 
     @Override
@@ -41,14 +42,14 @@ public class BuilderScreen extends Screen {
         int x = 20 + listW;
         int y = 30;
         int bw = 96, gap = 4;
-        addRenderableWidget(btn("加载到面前", x, y, bw, this::loadSelected));
-        addRenderableWidget(btn("卸载", x + bw + gap, y, bw, () -> {
+        addRenderableWidget(btn(Lang.t("gui.load"), x, y, bw, this::loadSelected));
+        addRenderableWidget(btn(Lang.t("gui.unload"), x + bw + gap, y, bw, () -> {
             BuildController.unload();
-            message = "已卸载";
+            message = Lang.t("gui.unloaded");
         }));
         y += 24;
-        addRenderableWidget(btn("旋转 90°", x, y, bw, () -> withPlacement(Placement::rotateCW)));
-        addRenderableWidget(btn("镜像", x + bw + gap, y, bw, () -> withPlacement(Placement::cycleMirror)));
+        addRenderableWidget(btn(Lang.t("gui.rotate"), x, y, bw, () -> withPlacement(Placement::rotateCW)));
+        addRenderableWidget(btn(Lang.t("gui.mirror"), x + bw + gap, y, bw, () -> withPlacement(Placement::cycleMirror)));
         y += 24;
         int sw = 30;
         String[] labels = {"X-", "X+", "Y-", "Y+", "Z-", "Z+"};
@@ -58,24 +59,26 @@ public class BuilderScreen extends Screen {
             addRenderableWidget(btn(labels[i], x + i * (sw + 3), y, sw, () -> withPlacement(p -> p.move(dd[0], dd[1], dd[2]))));
         }
         y += 24;
-        addRenderableWidget(btn("原点移到脚下", x, y, bw, () -> withPlacement(p -> p.setOrigin(minecraft.player.blockPosition()))));
-        addRenderableWidget(btn("材料清单", x + bw + gap, y, bw, this::printMaterials));
+        addRenderableWidget(btn(Lang.t("gui.origin_here"), x, y, bw, () -> withPlacement(p -> p.setOrigin(minecraft.player.blockPosition()))));
+        addRenderableWidget(btn(Lang.t("gui.materials"), x + bw + gap, y, bw, this::printMaterials));
         y += 24;
-        addRenderableWidget(btn("开始 / 继续", x, y, bw, () -> {
+        addRenderableWidget(btn(Lang.t("gui.start"), x, y, bw, () -> {
             BuildController.start();
             onClose();
         }));
-        addRenderableWidget(btn("暂停", x + bw + gap, y, bw, () -> BuildController.pause("手动暂停")));
+        addRenderableWidget(btn(Lang.t("gui.pause"), x + bw + gap, y, bw, () -> BuildController.pause(Lang.t("reason.manual"))));
         y += 24;
-        addRenderableWidget(btn("停止", x, y, bw, BuildController::stop));
-        addRenderableWidget(btn("打开蓝图文件夹", x + bw + gap, y, bw, () -> Util.getPlatform().openPath(BlueprintManager.dir())));
+        addRenderableWidget(btn(Lang.t("gui.stop"), x, y, bw, BuildController::stop));
+        addRenderableWidget(btn(Lang.t("gui.open_folder"), x + bw + gap, y, bw, () -> Util.getPlatform().openPath(BlueprintManager.dir())));
         y += 24;
-        addRenderableWidget(btn("刷新列表", x, y, bw, () -> rebuildWidgets()));
-        addRenderableWidget(btn("保存建筑/材料箱…", x + bw + gap, y, bw, () -> minecraft.setScreen(new ToolsScreen(this))));
+        addRenderableWidget(btn(Lang.t("gui.refresh"), x, y, bw, () -> rebuildWidgets()));
+        addRenderableWidget(btn(Lang.t("gui.tools"), x + bw + gap, y, bw, () -> minecraft.setScreen(new ToolsScreen(this))));
 
         // 右上角：设置、指令帮助
-        addRenderableWidget(btn("设置…", width - 10 - 50, 5, 50, () -> com.autobuilder.AutoBuilder.openConfig(this)));
-        addRenderableWidget(btn("指令帮助", width - 10 - 50 - 4 - 56, 5, 56, () -> {
+        int sw1 = Math.max(50, font.width(Lang.t("gui.settings")) + 12);
+        int sw2 = Math.max(56, font.width(Lang.t("gui.help")) + 12);
+        addRenderableWidget(btn(Lang.t("gui.settings"), width - 10 - sw1, 5, sw1, () -> com.autobuilder.AutoBuilder.openConfig(this)));
+        addRenderableWidget(btn(Lang.t("gui.help"), width - 10 - sw1 - 4 - sw2, 5, sw2, () -> {
             onClose();
             minecraft.player.connection.sendCommand("ab help");
         }));
@@ -88,7 +91,7 @@ public class BuilderScreen extends Screen {
     private void withPlacement(java.util.function.Consumer<Placement> c) {
         Placement p = BuildController.placement();
         if (p == null) {
-            message = "§c先加载一个蓝图";
+            message = "§c" + Lang.t("gui.need_blueprint");
             return;
         }
         c.accept(p);
@@ -96,7 +99,7 @@ public class BuilderScreen extends Screen {
 
     private void loadSelected() {
         if (selected == null) {
-            message = "§c先在左边选一个蓝图";
+            message = "§c" + Lang.t("gui.pick_first");
             return;
         }
         try {
@@ -104,19 +107,19 @@ public class BuilderScreen extends Screen {
             Minecraft mc = Minecraft.getInstance();
             Placement p = Placement.inFrontOf(bp, mc.player.blockPosition(), mc.player.getDirection());
             BuildController.setPlacement(p);
-            message = "§a已加载 " + bp.name + "（" + bp.sizeText() + "，" + bp.solidCount() + " 个方块）";
+            message = "§a" + Lang.t("msg.loaded", bp.name, bp.sizeText(), bp.solidCount());
         } catch (Exception ex) {
-            message = "§c加载失败：" + ex.getMessage();
+            message = "§c" + Lang.t("msg.load_failed", ex.getMessage());
         }
     }
 
     private void printMaterials() {
         List<String> lines = BuildController.materialLines();
         if (lines.isEmpty()) {
-            message = "§7还没有扫描结果";
+            message = "§7" + Lang.t("gui.no_scan");
             return;
         }
-        BuildController.msg("材料清单：", ChatFormatting.AQUA);
+        BuildController.msg(Lang.t("msg.materials_title"), ChatFormatting.AQUA);
         for (String l : lines) minecraft.player.displayClientMessage(Component.literal("  " + l), false);
         onClose();
     }
@@ -131,11 +134,10 @@ public class BuilderScreen extends Screen {
             g.drawString(font, "§b" + p.describe(), 10, y, 0xFFFFFF);
             Scanner.Snapshot s = BuildController.snapshot();
             if (s != null) {
-                g.drawString(font, "§7进度 " + s.percent() + "%  待放 " + s.place.size() + "  待挖 " + s.breaks.size()
-                        + "  状态 " + BuildController.state() + "  " + BuildController.activity(), 10, y + 11, 0xFFFFFF);
+                g.drawString(font, "§7" + Lang.t("gui.progress", s.percent(), s.place.size(), s.breaks.size(), BuildController.state(), BuildController.activity()), 10, y + 11, 0xFFFFFF);
             }
         } else {
-            g.drawString(font, "§7蓝图放在：" + BlueprintManager.dir(), 10, y, 0xFFFFFF);
+            g.drawString(font, "§7" + Lang.t("gui.folder", BlueprintManager.dir()), 10, y, 0xFFFFFF);
         }
         if (!message.isEmpty()) g.drawString(font, message, 10, y - 12, 0xFFFFFF);
     }
@@ -169,7 +171,7 @@ public class BuilderScreen extends Screen {
             @Override
             public void render(GuiGraphics g, int index, int top, int left, int width, int height, int mouseX, int mouseY,
                                boolean hovering, float partialTick) {
-                String name = e.name();
+                String name = e.display();
                 if (font.width(name) > width - 4) name = font.plainSubstrByWidth(name, width - 10) + "…";
                 g.drawString(font, (e.builtin() ? "§e" : "§f") + name, left + 2, top + 2, 0xFFFFFF);
             }

@@ -1,5 +1,6 @@
 package com.autobuilder.render;
 
+import com.autobuilder.Lang;
 import com.autobuilder.AutoBuilder;
 import com.autobuilder.build.BuildController;
 import com.autobuilder.build.Placement;
@@ -26,22 +27,22 @@ public final class HudOverlay {
         if (pl == null || mc.options.hideGui || mc.player == null) return;
         List<String> lines = new ArrayList<>();
         String st = switch (BuildController.state()) {
-            case IDLE -> "§7待命";
-            case RUNNING -> BuildController.phase() == BuildController.Phase.BUILD ? "§a建造中" : "§b拆脚手架";
-            case PAUSED -> "§e已暂停";
-            case DONE -> "§a已完成";
+            case IDLE -> "§7" + Lang.t("hud.idle");
+            case RUNNING -> BuildController.phase() == BuildController.Phase.BUILD ? "§a" + Lang.t("hud.building") : "§b" + Lang.t("hud.cleanup");
+            case PAUSED -> "§e" + Lang.t("hud.paused");
+            case DONE -> "§a" + Lang.t("hud.done");
         };
         lines.add("§6AutoBuilder §r" + st + " §7| §f" + pl.bp.name);
         Scanner.Snapshot s = BuildController.snapshot();
         if (s != null) {
-            lines.add("§f进度 " + s.percent() + "% §7(" + s.ok + "/" + s.total + ")  待放 " + s.place.size()
-                    + "  待挖 " + s.breaks.size() + (s.wrong.isEmpty() ? "" : "  §d不对 " + s.wrong.size()));
+            lines.add("§f" + Lang.t("hud.progress", s.percent(), s.ok, s.total, s.place.size(), s.breaks.size())
+                    + (s.wrong.isEmpty() ? "" : "  §d" + Lang.t("hud.wrong", s.wrong.size())));
         } else {
-            lines.add("§7扫描中…");
+            lines.add("§7" + Lang.t("hud.scanning"));
         }
         String act = BuildController.activity();
         if (!act.isEmpty()) lines.add("§7" + act);
-        if (!BuildController.missing().isEmpty()) lines.add("§c缺：" + BuildController.missingText(4));
+        if (!BuildController.missing().isEmpty()) lines.add("§c" + Lang.t("hud.missing", BuildController.missingText(4)));
         int y = 4;
         int sw = g.guiWidth();
         for (String line : lines) {

@@ -50,7 +50,7 @@ public final class AutoTest {
     private static int ticks;
     private static int endTick = -1;
     private static int shots;
-    private static String presetName = "[内置]小木屋";
+    private static String presetName = "builtin:cabin";
     private static boolean flat = true;
     private static long seed = 12345L;
     private static int timeout = 20 * 60 * 8;
@@ -94,9 +94,9 @@ public final class AutoTest {
             else if (p.equals("video")) video = true;
             else if (p.equals("menu")) menu = true;
             else presetName = switch (p) {
-                case "cabin" -> "[内置]小木屋";
-                case "tower" -> "[内置]瞭望塔";
-                case "yard" -> "[内置]围栏小院";
+                case "cabin" -> "builtin:cabin";
+                case "tower" -> "builtin:tower";
+                case "yard" -> "builtin:yard";
                 default -> p;
             };
         }
@@ -244,9 +244,9 @@ public final class AutoTest {
         if (menu) return "a";
         if (supply) return "d";
         return switch (presetName) {
-            case "[内置]小木屋" -> "cabin";
-            case "[内置]瞭望塔" -> "tower";
-            case "[内置]围栏小院" -> "yard";
+            case "builtin:cabin" -> "cabin";
+            case "builtin:tower" -> "tower";
+            case "builtin:yard" -> "yard";
             default -> presetName.replaceAll("[^A-Za-z0-9]", "").toLowerCase();
         };
     }
@@ -472,7 +472,9 @@ public final class AutoTest {
                 log("设置按钮打开了 " + (mc.screen == null ? "null" : mc.screen.getClass().getSimpleName() + " " + mc.screen.getTitle().getString()));
                 shot(mc, "menu_config");
             }
-            case 135 -> {
+            case 130 -> mc.setScreen(new com.autobuilder.gui.ToolsScreen(new com.autobuilder.gui.BuilderScreen()));
+            case 138 -> shot(mc, "tools");
+            case 145 -> {
                 log("退出");
                 mc.stop();
             }
@@ -752,6 +754,12 @@ public final class AutoTest {
 
     /** 读取 autobuild/ 目录下的所有蓝图文件，把内容打到日志里 */
     private static void fileFormatTest() {
+        try {
+            Blueprint legacy = BlueprintManager.load("[内置]小木屋");
+            log("旧名字 [内置]小木屋 → " + legacy.source + " / " + legacy.name);
+        } catch (Exception ex) {
+            log("旧名字加载失败 " + ex);
+        }
         for (BlueprintManager.Entry e : BlueprintManager.list()) {
             if (e.builtin()) continue;
             try {

@@ -1,5 +1,6 @@
 package com.autobuilder.build;
 
+import com.autobuilder.Lang;
 import com.autobuilder.AutoBuilder;
 import com.autobuilder.path.PathFinder;
 import java.util.ArrayList;
@@ -55,9 +56,9 @@ public final class Restocker {
     public static String describe() {
         if (stage == null) return "";
         return switch (stage) {
-            case GO -> "去材料箱 " + target.toShortString();
-            case OPEN, WAIT_OPEN -> "打开材料箱";
-            case TRANSFER -> "从材料箱取货";
+            case GO -> Lang.t("act.restock_go", target.toShortString());
+            case OPEN, WAIT_OPEN -> Lang.t("act.restock_open");
+            case TRANSFER -> Lang.t("act.restock_take");
         };
     }
 
@@ -215,7 +216,7 @@ public final class Restocker {
                 computeWant(p);
                 if (WANT.isEmpty() || !goNext(mc)) {
                     stage = null;
-                    if (gotSomething) BuildController.msg("补货完成", net.minecraft.ChatFormatting.AQUA);
+                    if (gotSomething) BuildController.msg(Lang.t("msg.restocked"), net.minecraft.ChatFormatting.AQUA);
                 }
             }
         }

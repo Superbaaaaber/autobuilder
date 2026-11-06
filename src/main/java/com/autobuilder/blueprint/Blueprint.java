@@ -1,5 +1,6 @@
 package com.autobuilder.blueprint;
 
+import com.autobuilder.Lang;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -22,9 +23,9 @@ public final class Blueprint {
     private final int[] data;
 
     public Blueprint(String name, int sx, int sy, int sz) {
-        if (sx <= 0 || sy <= 0 || sz <= 0) throw new IllegalArgumentException("蓝图尺寸无效: " + sx + "x" + sy + "x" + sz);
+        if (sx <= 0 || sy <= 0 || sz <= 0) throw new IllegalArgumentException(Lang.t("err.bad_size", sx, sy, sz));
         long vol = (long) sx * sy * sz;
-        if (vol > 16_000_000L) throw new IllegalArgumentException("蓝图太大: " + sx + "x" + sy + "x" + sz);
+        if (vol > 16_000_000L) throw new IllegalArgumentException(Lang.t("err.too_big", sx, sy, sz));
         this.name = name;
         this.sx = sx;
         this.sy = sy;

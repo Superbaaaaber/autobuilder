@@ -50,6 +50,10 @@ Server owners can disable automatic building for all AutoBuilder users on their 
 
 When disabled, AutoBuilder will not move or place anything; previewing and saving schematics still work. Singleplayer is never affected.
 
+## Languages
+
+English and 简体中文. The mod follows your game language.
+
 ## Requirements
 
 - Minecraft 1.21.1
@@ -94,6 +98,10 @@ Minecraft 1.21.1 NeoForge **纯客户端** mod：在生存模式下让玩家自�
 3. 材料放进背包（或登记材料箱），按 **N** 开始。再按 N 或按任意移动键暂停。
 
 聊天栏输入 `/ab help` 查看全部指令（鼠标悬停看说明，点击填进聊天栏）。设置：主界面右上角「设置…」、`/ab config`，或 模组 → AutoBuilder → 配置。
+
+### 语言
+
+支持简体中文和英文，跟随游戏语言自动切换。
 
 ### 多人游戏与服务器禁用
 

@@ -1,5 +1,6 @@
 package com.autobuilder.gui;
 
+import com.autobuilder.Lang;
 import com.autobuilder.blueprint.BlueprintSaver;
 import com.autobuilder.build.Selection;
 import com.autobuilder.build.SupplyManager;
@@ -21,7 +22,7 @@ public class ToolsScreen extends Screen {
     private String message = "";
 
     public ToolsScreen(Screen parent) {
-        super(Component.literal("保存建筑 / 材料箱"));
+        super(Component.literal(Lang.t("tools.title")));
         this.parent = parent;
         this.aimed = Selection.crosshairOrFeet();
     }
@@ -37,45 +38,45 @@ public class ToolsScreen extends Screen {
         int bw = 150, gap = 6;
         int x0 = cx - bw - gap / 2, x1 = cx + gap / 2;
         int y = 34;
-        addRenderableWidget(btn("角1 = 准星方块", x0, y, bw, () -> {
+        addRenderableWidget(btn(Lang.t("tools.corner1"), x0, y, bw, () -> {
             Selection.set(1, aimed);
-            message = "§a角1 = " + aimed.toShortString();
+            message = "§a" + Lang.t("tools.corner_set", 1, aimed.toShortString());
         }));
-        addRenderableWidget(btn("角2 = 准星方块", x1, y, bw, () -> {
+        addRenderableWidget(btn(Lang.t("tools.corner2"), x1, y, bw, () -> {
             Selection.set(2, aimed);
-            message = "§a角2 = " + aimed.toShortString();
+            message = "§a" + Lang.t("tools.corner_set", 2, aimed.toShortString());
         }));
         y += 36;
-        name = new EditBox(font, x0, y, bw * 2 + gap - 0, 18, Component.literal("名字"));
+        name = new EditBox(font, x0, y, bw * 2 + gap - 0, 18, Component.literal(Lang.t("tools.name")));
         name.setMaxLength(64);
-        name.setHint(Component.literal("蓝图名字，例如 我的房子"));
+        name.setHint(Component.literal(Lang.t("tools.name_hint")));
         addRenderableWidget(name);
         y += 24;
         addRenderableWidget(Button.builder(airLabel(), b -> {
             includeAir = !includeAir;
             b.setMessage(airLabel());
         }).bounds(x0, y, bw, 20).build());
-        addRenderableWidget(btn("保存选区", x1, y, bw, this::save));
+        addRenderableWidget(btn(Lang.t("tools.save"), x1, y, bw, this::save));
         y += 34;
-        addRenderableWidget(btn("准星处箱子设为材料箱", x0, y, bw, () -> {
+        addRenderableWidget(btn(Lang.t("tools.supply_add"), x0, y, bw, () -> {
             if (!SupplyManager.isContainer(aimed)) {
-                message = "§c准星对着的不是箱子/木桶/潜影盒";
+                message = "§c" + Lang.t("tools.not_container");
                 return;
             }
-            message = SupplyManager.add(aimed) ? "§a已添加材料箱 " + aimed.toShortString() : "§7已经是材料箱了";
+            message = SupplyManager.add(aimed) ? "§a" + Lang.t("tools.supply_added", aimed.toShortString()) : "§7" + Lang.t("tools.supply_exists");
         }));
-        addRenderableWidget(btn("移除准星处材料箱", x1, y, bw, () ->
-                message = SupplyManager.remove(aimed) ? "§a已移除 " + aimed.toShortString() : "§7这里不是材料箱"));
+        addRenderableWidget(btn(Lang.t("tools.supply_remove"), x1, y, bw, () ->
+                message = SupplyManager.remove(aimed) ? "§a" + Lang.t("tools.supply_removed", aimed.toShortString()) : "§7" + Lang.t("tools.not_supply")));
         y += 24;
-        addRenderableWidget(btn("清空材料箱列表", x0, y, bw, () -> {
+        addRenderableWidget(btn(Lang.t("tools.supply_clear"), x0, y, bw, () -> {
             SupplyManager.clear();
-            message = "§a已清空";
+            message = "§a" + Lang.t("tools.cleared");
         }));
-        addRenderableWidget(btn("返回", x1, y, bw, () -> minecraft.setScreen(parent)));
+        addRenderableWidget(btn(Lang.t("gui.back"), x1, y, bw, () -> minecraft.setScreen(parent)));
     }
 
     private Component airLabel() {
-        return Component.literal(includeAir ? "空格：保存（会清理）" : "空格：不保存");
+        return Component.literal(Lang.t(includeAir ? "tools.air_on" : "tools.air_off"));
     }
 
     private Button btn(String text, int x, int y, int w, Runnable r) {
@@ -84,19 +85,19 @@ public class ToolsScreen extends Screen {
 
     private void save() {
         if (!Selection.complete()) {
-            message = "§c先设好两个角";
+            message = "§c" + Lang.t("tools.need_corners");
             return;
         }
         String n = name.getValue().trim();
         if (n.isEmpty()) {
-            message = "§c先输入名字";
+            message = "§c" + Lang.t("tools.need_name");
             return;
         }
         try {
             Path out = BlueprintSaver.save(minecraft.level, Selection.pos1(), Selection.pos2(), n, includeAir);
-            message = "§a已保存：" + out.getFileName();
+            message = "§a" + Lang.t("tools.saved", out.getFileName());
         } catch (Exception e) {
-            message = "§c保存失败：" + e.getMessage();
+            message = "§c" + Lang.t("msg.save_failed", e.getMessage());
         }
     }
 
@@ -104,9 +105,9 @@ public class ToolsScreen extends Screen {
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
         super.render(g, mouseX, mouseY, partialTick);
         g.drawCenteredString(font, title, width / 2, 10, 0xFFFFFF);
-        g.drawCenteredString(font, "§7准星对着：" + aimed.toShortString() + "    选区：" + Selection.describe(), width / 2, 22, 0xFFFFFF);
+        g.drawCenteredString(font, "§7" + Lang.t("tools.status", aimed.toShortString(), Selection.describe()), width / 2, 22, 0xFFFFFF);
         List<BlockPos> sup = SupplyManager.list();
-        StringBuilder sb = new StringBuilder("§7材料箱 " + sup.size() + " 个");
+        StringBuilder sb = new StringBuilder("§7" + Lang.t("tools.supply_count", sup.size()));
         for (int i = 0; i < Math.min(4, sup.size()); i++) sb.append("  ").append(sup.get(i).toShortString());
         if (sup.size() > 4) sb.append(" …");
         g.drawCenteredString(font, sb.toString(), width / 2, height - 34, 0xFFFFFF);

@@ -1,5 +1,6 @@
 package com.autobuilder.blueprint;
 
+import com.autobuilder.Lang;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.HashMap;
@@ -27,7 +28,7 @@ public final class BlueprintSaver {
         BlockPos min = new BlockPos(Math.min(a.getX(), b.getX()), Math.min(a.getY(), b.getY()), Math.min(a.getZ(), b.getZ()));
         BlockPos max = new BlockPos(Math.max(a.getX(), b.getX()), Math.max(a.getY(), b.getY()), Math.max(a.getZ(), b.getZ()));
         int sx = max.getX() - min.getX() + 1, sy = max.getY() - min.getY() + 1, sz = max.getZ() - min.getZ() + 1;
-        if ((long) sx * sy * sz > 4_000_000L) throw new IOException("区域太大（超过 400 万格）");
+        if ((long) sx * sy * sz > 4_000_000L) throw new IOException(Lang.t("err.region_too_big"));
         Map<BlockState, Integer> palette = new HashMap<>();
         ListTag paletteTag = new ListTag();
         ListTag blocks = new ListTag();
@@ -35,7 +36,7 @@ public final class BlueprintSaver {
             for (int z = 0; z < sz; z++) {
                 for (int x = 0; x < sx; x++) {
                     BlockPos p = min.offset(x, y, z);
-                    if (!level.isLoaded(p)) throw new IOException("区域里有未加载的区块: " + p.toShortString());
+                    if (!level.isLoaded(p)) throw new IOException(Lang.t("err.unloaded", p.toShortString()));
                     BlockState st = level.getBlockState(p);
                     if (st.is(Blocks.STRUCTURE_VOID)) continue;
                     if (st.is(Blocks.CAVE_AIR) || st.is(Blocks.VOID_AIR)) st = Blocks.AIR.defaultBlockState();

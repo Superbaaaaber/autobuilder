@@ -1,5 +1,6 @@
 package com.autobuilder.blueprint;
 
+import com.autobuilder.Lang;
 import com.mojang.serialization.Dynamic;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -41,7 +42,7 @@ public final class BlueprintLoader {
         if (root.contains("Schematic", Tag.TAG_COMPOUND) || root.contains("Palette") || root.contains("BlockData")) {
             return fromSponge(name, root);
         }
-        throw new IOException("不支持的旧版 MCEdit .schematic 格式，请用 WorldEdit 重新导出成 .schem");
+        throw new IOException(Lang.t("err.old_schematic"));
     }
 
     private static int currentDataVersion() {
@@ -112,7 +113,7 @@ public final class BlueprintLoader {
                 if (a == 2) { minZ = Math.min(minZ, lo); maxZ = Math.max(maxZ, hi); }
             }
         }
-        if (minX == Integer.MAX_VALUE) throw new IllegalArgumentException("litematic 里没有区域");
+        if (minX == Integer.MAX_VALUE) throw new IllegalArgumentException(Lang.t("err.empty_litematic"));
         Blueprint bp = new Blueprint(name, maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1);
         for (String key : regions.getAllKeys()) {
             CompoundTag r = regions.getCompound(key);

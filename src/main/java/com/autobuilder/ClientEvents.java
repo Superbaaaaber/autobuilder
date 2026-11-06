@@ -23,7 +23,7 @@ public final class ClientEvents {
         } catch (RuntimeException ex) {
             AutoBuilder.LOG.error("AutoBuilder tick 出错", ex);
             BuildController.stop();
-            BuildController.msg("内部错误，已停止：" + ex, net.minecraft.ChatFormatting.RED);
+            BuildController.msg(Lang.t("msg.internal_error", ex), net.minecraft.ChatFormatting.RED);
         }
     }
 
@@ -40,12 +40,12 @@ public final class ClientEvents {
         while (Keys.POS1.consumeClick()) {
             var p = com.autobuilder.build.Selection.crosshairOrFeet();
             com.autobuilder.build.Selection.set(1, p);
-            BuildController.msg("选区角1 = " + p.toShortString() + "  " + com.autobuilder.build.Selection.describe(), net.minecraft.ChatFormatting.YELLOW);
+            BuildController.msg(Lang.t("msg.corner", 1, p.toShortString(), com.autobuilder.build.Selection.describe()), net.minecraft.ChatFormatting.YELLOW);
         }
         while (Keys.POS2.consumeClick()) {
             var p = com.autobuilder.build.Selection.crosshairOrFeet();
             com.autobuilder.build.Selection.set(2, p);
-            BuildController.msg("选区角2 = " + p.toShortString() + "  " + com.autobuilder.build.Selection.describe(), net.minecraft.ChatFormatting.YELLOW);
+            BuildController.msg(Lang.t("msg.corner", 2, p.toShortString(), com.autobuilder.build.Selection.describe()), net.minecraft.ChatFormatting.YELLOW);
         }
         while (Keys.LOAD_HERE.consumeClick()) {
             Placement p = BuildController.placement();

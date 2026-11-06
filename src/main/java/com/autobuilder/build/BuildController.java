@@ -1,5 +1,6 @@
 package com.autobuilder.build;
 
+import com.autobuilder.Lang;
 import com.autobuilder.ABConfig;
 import com.autobuilder.AutoBuilder;
 import com.autobuilder.path.PathExecutor;
@@ -116,11 +117,11 @@ public final class BuildController {
 
     public static void start() {
         if (placement == null) {
-            msg("还没有加载蓝图", ChatFormatting.RED);
+            msg(Lang.t("msg.no_blueprint"), ChatFormatting.RED);
             return;
         }
         if (!ServerPolicy.allowed()) {
-            msg("这个服务器禁止使用自动建造（服务器设置了 " + ServerPolicy.TOKEN + "）", ChatFormatting.RED);
+            msg(Lang.t("msg.server_disabled_token", ServerPolicy.TOKEN), ChatFormatting.RED);
             return;
         }
         state = State.RUNNING;
@@ -140,8 +141,8 @@ public final class BuildController {
         warnedRejected = false;
         MISSING.clear();
         SCANNER.restart();
-        activity = "开始";
-        msg("开始建造：" + placement.bp.name, ChatFormatting.GREEN);
+        activity = Lang.t("act.start");
+        msg(Lang.t("msg.start", placement.bp.name), ChatFormatting.GREEN);
     }
 
     public static void pause(String why) {
@@ -149,17 +150,17 @@ public final class BuildController {
         state = State.PAUSED;
         halt();
         activity = why;
-        msg("已暂停：" + why, ChatFormatting.YELLOW);
+        msg(Lang.t("msg.paused", why), ChatFormatting.YELLOW);
     }
 
     public static void stop() {
-        if (state == State.RUNNING || state == State.PAUSED) activity = "已停止";
+        if (state == State.RUNNING || state == State.PAUSED) activity = Lang.t("act.stopped");
         state = State.IDLE;
         halt();
     }
 
     public static void toggle() {
-        if (state == State.RUNNING) pause("手动暂停");
+        if (state == State.RUNNING) pause(Lang.t("reason.manual"));
         else start();
     }
 
@@ -214,8 +215,7 @@ public final class BuildController {
                     placementKey = SupplyManager.worldKey();
                     SCANNER.reset();
                     state = State.IDLE;
-                    msg("检测到上次没建完的：" + pl.bp.name + " @ " + pl.origin().toShortString()
-                            + "，按 N 继续（不要了就 /ab unload）", ChatFormatting.AQUA);
+                    msg(Lang.t("msg.resume_found", pl.bp.name, pl.origin().toShortString()), ChatFormatting.AQUA);
                 }
             }
             return;
@@ -232,7 +232,7 @@ public final class BuildController {
         SCANNER.tick(placement, level, 30000, SCAFFOLD);
         if (state == State.RUNNING && !ServerPolicy.allowed()) {
             stop();
-            msg("这个服务器禁止使用自动建造，已停止", ChatFormatting.RED);
+            msg(Lang.t("msg.server_disabled_stop"), ChatFormatting.RED);
         }
         if (state != State.RUNNING) {
             WALKER.release();
@@ -240,23 +240,23 @@ public final class BuildController {
         }
         if (p.isDeadOrDying()) {
             stop();
-            msg("玩家死亡，已停止", ChatFormatting.RED);
+            msg(Lang.t("msg.died"), ChatFormatting.RED);
             return;
         }
         // 掉进岩浆/着火：先逃命
         if (p.isInLava() || p.isOnFire() && !p.isInWater()) {
             BREAKER.cancel(MC);
             WALKER.escape(p, lastSafe);
-            activity = "脱离危险";
+            activity = Lang.t("act.escape");
             return;
         }
         if (p.onGround() && !p.isInWater() && p.hurtTime == 0) lastSafe = p.position();
         if (p.getHealth() < ABConfig.STOP_BELOW_HEALTH.get()) {
-            pause("血量过低");
+            pause(Lang.t("reason.low_health"));
             return;
         }
         if (ABConfig.PAUSE_ON_INPUT.get() && userMoving()) {
-            pause("检测到手动移动");
+            pause(Lang.t("reason.manual_move"));
             return;
         }
         if (Restocker.active()) {
@@ -265,7 +265,7 @@ public final class BuildController {
             return;
         }
         if (!InventoryHelper.canSwap(p)) {
-            activity = "等待关闭容器界面";
+            activity = Lang.t("act.wait_container");
             WALKER.hold();
             return;
         }
@@ -273,12 +273,12 @@ public final class BuildController {
         BLACKLIST.entrySet().removeIf(e -> e.getValue() <= tick);
 
         if (AutoEat.tick(MC)) {
-            activity = "进食中";
+            activity = Lang.t("act.eating");
             WALKER.hold();
             return;
         }
         if (BREAKER.active()) {
-            activity = "挖掘 " + BREAKER.pos().toShortString();
+            activity = Lang.t("act.break", BREAKER.pos().toShortString());
             BREAKER.tick(MC, reach());
             WALKER.hold();
             return;
@@ -378,13 +378,13 @@ public final class BuildController {
             if (debug) AutoBuilder.LOG.info("[AB] 挖 {} {}", b.toShortString(), level.getBlockState(b));
             BREAKER.start(b);
             BREAKER.tick(MC, reach);
-            activity = "挖掘 " + b.toShortString();
+            activity = Lang.t("act.break", b.toShortString());
             return true;
         }
         for (BlockPos b : interacts) {
             Placer.interact(MC, b);
             PENDING.put(b, tick + 6);
-            activity = "调整 " + b.toShortString();
+            activity = Lang.t("act.interact", b.toShortString());
             return true;
         }
         // 就绪的液体要趁上面还空着赶紧倒
@@ -410,7 +410,7 @@ public final class BuildController {
             if (!InventoryHelper.selectItem(MC, item)) continue;
             Placer.Result res = Placer.execute(MC, a);
             if (res == Placer.Result.DEFERRED) {
-                activity = "转向 " + b.toShortString();
+                activity = Lang.t("act.turn", b.toShortString());
                 return true; // 等服务端头部朝向跟上
             }
             if (res == Placer.Result.PLACED) {
@@ -418,7 +418,7 @@ public final class BuildController {
                 countAttempt(b);
                 MISSING.remove(item);
                 done++;
-                activity = "放置 " + b.toShortString();
+                activity = Lang.t("act.place", b.toShortString());
                 if (done >= max) return true;
             } else {
                 PENDING.put(b, tick + 20);
@@ -448,7 +448,7 @@ public final class BuildController {
             if (!InventoryHelper.selectItem(MC, bucket)) continue;
             Placer.Result res = FluidPlacer.execute(MC, a);
             if (res == Placer.Result.DEFERRED) {
-                activity = "站稳后倒液体";
+                activity = Lang.t("act.fluid_wait");
                 return true;
             }
             if (debug) AutoBuilder.LOG.info("[AB] 倒 {} {} r={}", b.toShortString(), bucket, res);
@@ -456,7 +456,7 @@ public final class BuildController {
             if (res == Placer.Result.PLACED) {
                 countAttempt(b);
                 MISSING.remove(bucket);
-                activity = (waterlog ? "加水 " : "倒液体 ") + b.toShortString();
+                activity = Lang.t(waterlog ? "act.waterlog" : "act.pour", b.toShortString());
                 return true;
             }
         }
@@ -473,7 +473,7 @@ public final class BuildController {
                     Placer.Result res = FluidPlacer.execute(MC, a);
                     if (res == Placer.Result.PLACED) refillReadyTick = tick + 10; // 等水源再生，免得把无限水抽干
                     if (res != Placer.Result.FAILED) {
-                        activity = "打水";
+                        activity = Lang.t("act.refill");
                         return true;
                     }
                 }
@@ -601,7 +601,7 @@ public final class BuildController {
             BLACKLIST.put(pos.immutable(), tick + 1200);
             if (!warnedRejected) {
                 warnedRejected = true;
-                msg("有方块反复放/挖不成功（可能是出生点保护或领地限制），先跳过：" + pos.toShortString(), ChatFormatting.YELLOW);
+                msg(Lang.t("msg.skip_rejected", pos.toShortString()), ChatFormatting.YELLOW);
             }
             return false;
         }
@@ -646,7 +646,7 @@ public final class BuildController {
         SEALS.put(b.immutable(), seen);
         SEAL_TICK.put(b.immutable(), tick);
         if (debug) AutoBuilder.LOG.info("[AB] 封口 {} 封闭区 {} 格，先出去", b.toShortString(), seen.size());
-        activity = "先出去再封口 " + b.toShortString();
+        activity = Lang.t("act.leave_first", b.toShortString());
         return true;
     }
 
@@ -689,7 +689,7 @@ public final class BuildController {
     private static void chooseTarget(LocalPlayer p, ClientLevel level) {
         Scanner.Snapshot s = SCANNER.snapshot();
         if (s == null) {
-            activity = "扫描中";
+            activity = Lang.t("act.scanning");
             return;
         }
         if (tryPickup(p, level, s)) return;
@@ -725,7 +725,7 @@ public final class BuildController {
             if (cands.isEmpty()) {
                 noTargetTicks++;
                 if (noTargetTicks < 25) {
-                    activity = "检查进度";
+                    activity = Lang.t("act.checking");
                     return; // 等扫描器刷新一轮，避免刚放下的方块还没反映出来
                 }
                 if (!MISSING.isEmpty()) {
@@ -733,14 +733,14 @@ public final class BuildController {
                         activity = Restocker.describe();
                         return;
                     }
-                    pause("缺少材料：" + missingText(8) + (SupplyManager.any() ? "（材料箱里也没有）" : ""));
+                    pause(Lang.t(SupplyManager.any() ? "reason.missing_supply" : "reason.missing", missingText(8)));
                     return;
                 }
                 // 只等还有活要干的黑名单位置；捡不到的掉落物也在黑名单里，但不该挡住收尾
                 boolean blockedWork = BLACKLIST.keySet().stream().anyMatch(b -> s.place.contains(b) || s.breaks.contains(b)
                         || s.interact.contains(b) || s.fluids.contains(b));
                 if (blockedWork) {
-                    activity = "有够不着的位置，稍后重试";
+                    activity = Lang.t("act.unreachable");
                     if (noTargetTicks > 25 + 400) {
                         BLACKLIST.clear();
                         noTargetTicks = 0;
@@ -753,7 +753,7 @@ public final class BuildController {
                     return;
                 }
                 if (!s.place.isEmpty() || !s.fluids.isEmpty()) {
-                    activity = "剩余方块暂时放不了";
+                    activity = Lang.t("act.stuck_place");
                     if (noTargetTicks > 200) finishBuild(s);
                     return;
                 }
@@ -772,14 +772,14 @@ public final class BuildController {
                     // 剩下的都在黑名单里（暂时够不着），清空黑名单再试几轮
                     cleanupRetries++;
                     BLACKLIST.clear();
-                    activity = "重试拆除剩余脚手架";
+                    activity = Lang.t("act.retry_scaffold");
                     return;
                 }
-                finish(SCAFFOLD.isEmpty() ? "建造完成，脚手架已拆除" : "建造完成，还有 " + SCAFFOLD.size() + " 块脚手架没拆掉");
+                finish(SCAFFOLD.isEmpty() ? Lang.t("msg.done_clean") : Lang.t("msg.done_left", SCAFFOLD.size()));
                 return;
             }
             if (++cleanupRounds > 400) {
-                finish("建造完成，拆脚手架超时，剩 " + sc.size() + " 块");
+                finish(Lang.t("msg.done_timeout", sc.size()));
                 return;
             }
             sc.sort(Comparator.<BlockPos>comparingInt(b -> -b.getY()).thenComparingDouble(b -> b.distToCenterSqr(pos)));
@@ -798,7 +798,7 @@ public final class BuildController {
             if (path == null) {
                 BLACKLIST.put(t.pos, tick + 300);
                 if (t.kind == Kind.FLUID && FLUID_FAILS.merge(t.pos, 1, Integer::sum) >= 3) {
-                    msg("这里的液体从哪都瞄不到，先跳过：" + t.pos.toShortString(), ChatFormatting.YELLOW);
+                    msg(Lang.t("msg.fluid_unreachable", t.pos.toShortString()), ChatFormatting.YELLOW);
                     barrierFor = null;
                 }
                 continue;
@@ -809,10 +809,10 @@ public final class BuildController {
                 continue;
             }
             WALKER.setPath(path, t.pos);
-            activity = "前往 " + t.pos.toShortString();
+            activity = Lang.t("act.goto", t.pos.toShortString());
             return;
         }
-        activity = "找不到路，换个目标";
+        activity = Lang.t("act.no_path");
     }
 
     private static void collectPlaces(LocalPlayer p, ClientLevel level, Scanner.Snapshot s, int tier, List<Target> cands, Vec3 pos) {
@@ -939,7 +939,7 @@ public final class BuildController {
                 continue;
             }
             WALKER.setPath(path, e.blockPosition());
-            activity = "捡起 " + e.getItem().getHoverName().getString();
+            activity = Lang.t("act.pickup", e.getItem().getHoverName().getString());
             return true;
         }
         pickupCooldownUntil = tick + 40;
@@ -948,17 +948,17 @@ public final class BuildController {
 
     private static void finishBuild(Scanner.Snapshot s) {
         String extra = "";
-        if (s.unsupported > 0) extra += "，" + s.unsupported + " 格无法放置（水、火等）";
-        if (!s.wrong.isEmpty()) extra += "，" + s.wrong.size() + " 格方块不对";
-        if (!s.place.isEmpty()) extra += "，" + s.place.size() + " 格未完成";
-        if (!s.fluids.isEmpty()) extra += "，" + s.fluids.size() + " 处液体没倒上";
+        if (s.unsupported > 0) extra += Lang.t("msg.extra_unsupported", s.unsupported);
+        if (!s.wrong.isEmpty()) extra += Lang.t("msg.extra_wrong", s.wrong.size());
+        if (!s.place.isEmpty()) extra += Lang.t("msg.extra_unfinished", s.place.size());
+        if (!s.fluids.isEmpty()) extra += Lang.t("msg.extra_fluid", s.fluids.size());
         if (ABConfig.REMOVE_SCAFFOLD.get() && !SCAFFOLD.isEmpty()) {
             phase = Phase.CLEANUP;
             BLACKLIST.clear();
-            msg("主体完成" + extra + "，开始拆脚手架（" + SCAFFOLD.size() + " 块）", ChatFormatting.AQUA);
+            msg(Lang.t("msg.main_done", extra, SCAFFOLD.size()), ChatFormatting.AQUA);
             return;
         }
-        finish("建造完成" + extra);
+        finish(Lang.t("msg.done_extra", extra));
     }
 
     private static List<PathFinder.Step> findPathTo(LocalPlayer p, ClientLevel level, Target t) {
@@ -1069,7 +1069,7 @@ public final class BuildController {
         }
         Item sc = ScaffoldItems.pick(p, placement, SCANNER.snapshot());
         if (sc == null) {
-            pause("没有可用的脚手架方块（可在配置 scaffoldBlocks 里设置）");
+            pause(Lang.t("reason.no_scaffold"));
             return false;
         }
         Placer.PlaceAction a = Placer.planAny(MC, pos, sc);
@@ -1090,7 +1090,7 @@ public final class BuildController {
         int i = 0;
         for (Map.Entry<Item, Integer> e : MISSING.entrySet()) {
             if (i++ >= limit) {
-                sb.append(" 等");
+                sb.append(Lang.t("misc.etc"));
                 break;
             }
             if (sb.length() > 0) sb.append("、");
@@ -1111,8 +1111,8 @@ public final class BuildController {
             int lack = Math.max(0, e.getValue() - have);
             ResourceLocation id = BuiltInRegistries.ITEM.getKey(e.getKey());
             String name = new ItemStack(e.getKey()).getHoverName().getString();
-            out.add((lack > 0 ? "§c" : "§a") + name + " §7(" + id.getPath() + ")§r 需要 " + e.getValue() + "，背包 " + have
-                    + (lack > 0 ? "，§c缺 " + lack : ""));
+            out.add((lack > 0 ? "§c" : "§a") + name + " §7(" + id.getPath() + ")§r " + Lang.t("msg.material_line", e.getValue(), have)
+                    + (lack > 0 ? Lang.t("msg.material_lack", lack) : ""));
         }
         return out;
     }

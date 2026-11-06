@@ -5,21 +5,14 @@ import net.minecraft.network.chat.Component;
 import net.neoforged.neoforge.common.ModConfigSpec;
 import net.neoforged.neoforge.common.TranslatableEnum;
 
-/** 客户端配置，文件在 config/autobuilder-client.toml，也可以在模组列表里点“配置”修改。 */
+/** 客户端配置，文件在 config/autobuilder-client.toml，也可以在模组列表里点“配置”修改。配置文件注释用英文，界面提示走语言文件。 */
 public final class ABConfig {
     public enum PlaceMode implements TranslatableEnum {
-        AIRPLACE("直接放（不需要依附面）"),
-        ADJACENT("点相邻方块的面（更像真人）");
-
-        private final String label;
-
-        PlaceMode(String label) {
-            this.label = label;
-        }
+        AIRPLACE, ADJACENT;
 
         @Override
         public Component getTranslatedName() {
-            return Component.literal(label);
+            return Component.translatable("autobuilder.configuration.placeMode." + name().toLowerCase(java.util.Locale.ROOT));
         }
     }
 
@@ -49,57 +42,57 @@ public final class ABConfig {
         ModConfigSpec.Builder b = new ModConfigSpec.Builder();
 
         b.push("build");
-        REACH = b.comment("触及距离：眼睛到方块碰撞箱最近点的最大距离。原版服务端上限是 4.5+1=5.5，留点余量")
+        REACH = b.comment("Reach: max distance from your eyes to the nearest point of a block. Vanilla servers allow 4.5+1=5.5, so keep a margin")
                 .defineInRange("reach", 4.8, 1.0, 5.4);
-        ACTION_DELAY = b.comment("两次操作（放/挖/交互）之间间隔的 tick 数，0 表示每 tick 都操作")
+        ACTION_DELAY = b.comment("Ticks between actions (place / break / interact). 0 = every tick")
                 .defineInRange("actionDelay", 1, 0, 20);
-        ACTIONS_PER_TICK = b.comment("每次操作时最多连续放几个方块")
+        ACTIONS_PER_TICK = b.comment("Max blocks placed per action")
                 .defineInRange("actionsPerTick", 1, 1, 8);
-        PLACE_MODE = b.comment("AIRPLACE：直接对目标格发包放置，不需要依附面；ADJACENT：点击相邻方块的面（更像真人，有反作弊的服用这个）")
+        PLACE_MODE = b.comment("AIRPLACE: place directly at the target cell, no supporting face needed. ADJACENT: click the face of a neighbouring block (more human-like; use it on servers with anti-cheat)")
                 .defineEnum("placeMode", PlaceMode.AIRPLACE);
-        SILENT_ROTATION = b.comment("放有朝向的方块时只发转头包，本地镜头不动")
+        SILENT_ROTATION = b.comment("When placing directional blocks, only send rotation packets; your camera doesn't move")
                 .define("silentRotation", true);
-        BREAK_WRONG = b.comment("挖掉蓝图位置上放错的方块")
+        BREAK_WRONG = b.comment("Break wrong blocks at blueprint positions")
                 .define("breakWrongBlocks", true);
-        CLEAR_AIR = b.comment("挖掉蓝图里本该是空气的位置上的方块（比如房子里的泥土）")
+        CLEAR_AIR = b.comment("Break blocks where the blueprint has air (e.g. dirt inside a house)")
                 .define("clearAirBlocks", true);
         b.pop();
 
         b.push("movement");
-        ALLOW_SCAFFOLD = b.comment("允许垫方块搭柱子/搭桥")
+        ALLOW_SCAFFOLD = b.comment("Allow pillaring up and bridging with blocks")
                 .define("allowScaffold", true);
-        REMOVE_SCAFFOLD = b.comment("完工后拆掉自己搭的脚手架")
+        REMOVE_SCAFFOLD = b.comment("Remove your own scaffolding when finished")
                 .define("removeScaffold", true);
-        SCAFFOLD_BLOCKS = b.comment("可以拿来当脚手架的方块")
+        SCAFFOLD_BLOCKS = b.comment("Blocks that may be used as scaffolding")
                 .defineListAllowEmpty("scaffoldBlocks",
                         List.of("minecraft:dirt", "minecraft:cobblestone", "minecraft:cobbled_deepslate",
                                 "minecraft:netherrack", "minecraft:andesite", "minecraft:diorite",
                                 "minecraft:granite", "minecraft:tuff", "minecraft:stone"),
                         () -> "minecraft:dirt", o -> o instanceof String);
-        ALLOW_DIG = b.comment("寻路时允许挖开挡路的地形")
+        ALLOW_DIG = b.comment("Allow digging through terrain while pathfinding")
                 .define("allowDig", true);
-        MAX_FALL = b.comment("寻路允许的最大下落高度（格）")
+        MAX_FALL = b.comment("Max fall height while pathfinding (blocks)")
                 .defineInRange("maxFall", 3, 1, 3);
         b.pop();
 
         b.push("safety");
-        AUTO_EAT = b.comment("饿了自动吃背包里的食物")
+        AUTO_EAT = b.comment("Eat food from your inventory when hungry")
                 .define("autoEat", true);
-        EAT_BELOW = b.comment("饱食度低于多少时吃东西（满值 20）")
+        EAT_BELOW = b.comment("Eat when hunger is below this (full = 20)")
                 .defineInRange("eatBelow", 14, 1, 19);
-        STOP_BELOW_HEALTH = b.comment("血量低于多少时停止建造（满血 20）")
+        STOP_BELOW_HEALTH = b.comment("Stop building when health is below this (full = 20)")
                 .defineInRange("stopBelowHealth", 8, 0, 19);
-        PAUSE_ON_INPUT = b.comment("按下移动键时自动暂停（方便手动接管）")
+        PAUSE_ON_INPUT = b.comment("Pause when you press a movement key (to take over manually)")
                 .define("pauseOnInput", true);
-        WORK_SLOTS = b.comment("从背包换材料到快捷栏时使用的快捷栏格子（0~8）")
+        WORK_SLOTS = b.comment("Hotbar slots (0-8) used when swapping items in from the inventory")
                 .defineListAllowEmpty("workSlots", List.of(6, 7, 8), () -> 8,
                         o -> o instanceof Integer i && i >= 0 && i <= 8);
         b.pop();
 
         b.push("render");
-        RENDER_GHOSTS = b.comment("渲染半透明的待放方块")
+        RENDER_GHOSTS = b.comment("Render translucent blocks still to be placed")
                 .define("renderGhosts", true);
-        RENDER_RANGE = b.comment("预览渲染距离（格）")
+        RENDER_RANGE = b.comment("Preview render distance (blocks)")
                 .defineInRange("renderRange", 48, 8, 256);
         b.pop();
 
