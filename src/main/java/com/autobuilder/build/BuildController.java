@@ -172,7 +172,7 @@ public final class BuildController {
 
     /** 退出世界：保存断点，清掉内存里的状态（不删存档） */
     public static void detach() {
-        if (placement != null) SessionStore.save(placementKey, placement, SCAFFOLD);
+        if (placement != null && state != State.DONE) SessionStore.save(placementKey, placement, SCAFFOLD);
         stop();
         placement = null;
         SCANNER.reset();
@@ -227,7 +227,7 @@ public final class BuildController {
             return;
         }
         // 定期保存断点（位置、旋转或脚手架有变化时）
-        if (tick % 40 == 0) SessionStore.save(placementKey, placement, SCAFFOLD);
+        if (tick % 40 == 0 && state != State.DONE) SessionStore.save(placementKey, placement, SCAFFOLD); // 建完的不再存，免得下次进世界提示“没建完”
         Placer.tickRotation(p, tick);
         SCANNER.tick(placement, level, 30000, SCAFFOLD);
         if (state == State.RUNNING && !ServerPolicy.allowed()) {

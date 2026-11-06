@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+
+- Fix: a finished build was saved again as a resume point, so re-entering the world said there was an unfinished build.
+
 ## 1.2.0
 
 First public release.

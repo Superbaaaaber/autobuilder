@@ -34,6 +34,7 @@ public class AutoBuilder {
         NeoForge.EVENT_BUS.register(ClientEvents.class);
         if (AutoTest.ENABLED) {
             NeoForge.EVENT_BUS.register(AutoTest.class);
+            NeoForge.EVENT_BUS.register(com.autobuilder.dev.CameraRig.class);
         }
     }
 

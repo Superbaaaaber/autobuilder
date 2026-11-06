@@ -62,6 +62,11 @@ public final class AutoTest {
     private static boolean ui;
     /** showcase：大窗口、清掉聊天和提示，拍项目页展示图（建造前预览、建造中、完工无 HUD） */
     private static boolean showcase;
+    /** video：录宣传片素材（大窗口、电影镜头、ffmpeg 录像）；menu：小木屋从主界面选蓝图开始，最后演示帮助和设置 */
+    private static boolean video, menu;
+    private static int vt, vStage, vMark;
+    private static boolean buildStarted, restockSeen;
+    private static int restockDoneAt = -1;
     private static boolean midShot;
     private static int midShotTick = -1;
     private static int uiTicks;
@@ -86,6 +91,8 @@ public final class AutoTest {
             else if (p.equals("resume")) resume = true;
             else if (p.equals("ui")) ui = true;
             else if (p.equals("showcase")) showcase = true;
+            else if (p.equals("video")) video = true;
+            else if (p.equals("menu")) menu = true;
             else presetName = switch (p) {
                 case "cabin" -> "[内置]小木屋";
                 case "tower" -> "[内置]瞭望塔";
@@ -161,6 +168,15 @@ public final class AutoTest {
             uiStep(mc, ++uiTicks);
             return;
         }
+        if (video && mc.player != null && mc.level != null) {
+            vt++;
+            try {
+                videoTick(mc);
+            } catch (Exception ex) {
+                log("录像脚本异常 " + ex);
+                AutoBuilder.LOG.error("video", ex);
+            }
+        }
         if (mc.player == null || mc.level == null || mc.screen != null && mc.screen.isPauseScreen()) return;
         ticks++;
         try {
@@ -190,6 +206,217 @@ public final class AutoTest {
     private static void tidy(Minecraft mc) {
         mc.gui.getChat().clearMessages(false);
         mc.getToasts().clear();
+    }
+
+    // ---------------- 宣传片录制 ----------------
+
+    private static Path videoDir(Minecraft mc) {
+        Path d = mc.gameDirectory.toPath().resolve("video");
+        try {
+            Files.createDirectories(d);
+        } catch (IOException ignored) {
+        }
+        return d;
+    }
+
+    private static void rec(Minecraft mc, String name) {
+        Recorder.start(videoDir(mc).resolve(name + ".mp4"));
+        log("开始录制 " + name);
+    }
+
+    private static void stopRec() {
+        if (Recorder.active()) {
+            Recorder.stop();
+            log("结束录制");
+        }
+    }
+
+    private static void vNext(int stage) {
+        vStage = stage;
+        vMark = vt;
+    }
+
+    private static int since() {
+        return vt - vMark;
+    }
+
+    private static String clipPrefix() {
+        if (menu) return "a";
+        if (supply) return "d";
+        return switch (presetName) {
+            case "[内置]小木屋" -> "cabin";
+            case "[内置]瞭望塔" -> "tower";
+            case "[内置]围栏小院" -> "yard";
+            default -> presetName.replaceAll("[^A-Za-z0-9]", "").toLowerCase();
+        };
+    }
+
+    /** 绕蓝图转圈；speed 度/秒 */
+    private static void orbitBuilding(double radiusExtra, double heightFactor, double startDeg, double speed) {
+        Placement pl = BuildController.placement();
+        if (pl == null) return;
+        double cx = pl.origin().getX() + pl.sizeX() / 2.0, cz = pl.origin().getZ() + pl.sizeZ() / 2.0;
+        double cy = pl.origin().getY() + pl.sizeY() * 0.4;
+        double r = Math.max(pl.sizeX(), pl.sizeZ()) * 0.9 + radiusExtra;
+        CameraRig.orbit(new net.minecraft.world.phys.Vec3(cx, cy, cz), r, pl.sizeY() * heightFactor + 2, startDeg, speed);
+    }
+
+    private static void exitVideo(Minecraft mc) {
+        stopRec();
+        log("录像结束，退出");
+        mc.stop();
+    }
+
+    private static void videoTick(Minecraft mc) {
+        mc.getToasts().clear();
+        if (vt == 5) {
+            mc.getWindow().setWindowed(1920, 1080);
+            mc.options.guiScale().set(3);
+            mc.resizeDisplay();
+        }
+        switch (vStage) {
+            case 0 -> {
+                if (ticks >= 88) {
+                    log("窗口 " + mc.getWindow().getWidth() + "x" + mc.getWindow().getHeight());
+                    tidy(mc);
+                    if (menu) vNext(10);
+                    else if (supply) vNext(30);
+                    else vNext(20);
+                }
+            }
+            // 小木屋：从主界面选蓝图、加载
+            case 10 -> {
+                mc.player.setYRot(180);
+                mc.player.setXRot(12);
+                mc.options.setCameraType(CameraType.FIRST_PERSON);
+                mc.options.hideGui = false;
+                CameraRig.off();
+                rec(mc, "a_menu");
+                mc.setScreen(new com.autobuilder.gui.BuilderScreen());
+                vNext(11);
+            }
+            case 11 -> {
+                if (since() == 30 && mc.screen != null) mc.screen.mouseClicked(40, 41, 0);
+                if (since() == 60 && mc.screen != null) {
+                    var b = findButton(mc.screen, "加载到面前");
+                    log("加载按钮 " + (b == null ? "没找到" : "已点击"));
+                    if (b != null) b.onPress();
+                }
+                if (since() == 90) mc.setScreen(null);
+                if (since() == 120) {
+                    stopRec();
+                    vNext(12);
+                }
+            }
+            case 12 -> {
+                mc.options.hideGui = true;
+                orbitBuilding(5, 0.6, 15, 9);
+                rec(mc, "a_preview");
+                vNext(13);
+            }
+            case 13 -> {
+                if (since() == 160) {
+                    stopRec();
+                    mc.options.hideGui = false;
+                    orbitBuilding(6, 0.7, 15 + 9 * 8, 5);
+                    BuildController.start();
+                    buildStarted = true;
+                    rec(mc, "a_build");
+                    vNext(40);
+                }
+            }
+            // 其它蓝图：建造全程转圈
+            case 20 -> {
+                if (BuildController.placement() == null) return;
+                mc.options.hideGui = false;
+                orbitBuilding(6, 0.7, 15, 5);
+                rec(mc, clipPrefix() + "_build");
+                vNext(40);
+            }
+            // 材料箱：固定机位对着木桶
+            case 30 -> {
+                if (BARRELS.isEmpty() || BuildController.placement() == null) return;
+                BlockPos b0 = BARRELS.get(0);
+                var me = mc.player.position();
+                var look = new net.minecraft.world.phys.Vec3((me.x + b0.getX() + 0.5) / 2, b0.getY() + 1.0, (me.z + b0.getZ() + 0.5) / 2 - 1.5);
+                CameraRig.fixed(look.add(-1.5, 7, 13), look);
+                mc.options.hideGui = false;
+                rec(mc, "d_restock");
+                vNext(31);
+            }
+            case 31 -> {
+                if (com.autobuilder.build.Restocker.active()) restockSeen = true;
+                if (restockSeen && !com.autobuilder.build.Restocker.active() && restockDoneAt < 0) restockDoneAt = vt;
+                if (restockDoneAt > 0 && vt - restockDoneAt == 140 || since() > 2400) exitVideo(mc);
+            }
+            // 等建完
+            case 40 -> {
+                if (endTick > 0) vNext(41);
+            }
+            case 41 -> {
+                if (since() == 30) {
+                    stopRec();
+                    mc.options.hideGui = true;
+                    orbitBuilding(4, 0.5, 200, 14);
+                    rec(mc, clipPrefix() + "_done");
+                    vNext(42);
+                }
+            }
+            case 42 -> {
+                if (since() == 220) {
+                    stopRec();
+                    if (menu) vNext(50);
+                    else exitVideo(mc);
+                }
+            }
+            // 小木屋最后：帮助和设置
+            case 50 -> {
+                CameraRig.off();
+                mc.options.hideGui = false;
+                mc.options.setCameraType(CameraType.FIRST_PERSON);
+                Placement pl = BuildController.placement();
+                BlockPos c = pl.origin().offset(pl.sizeX() / 2, 0, pl.sizeZ() / 2);
+                cmd(mc, "tp @s " + (c.getX() + 6) + " " + (c.getY() + 1) + " " + (c.getZ() + 9)
+                        + " facing " + c.getX() + " " + (c.getY() + 3) + " " + c.getZ());
+                vNext(51);
+            }
+            case 51 -> {
+                if (since() == 20) {
+                    tidy(mc);
+                    cmd(mc, "ab help");
+                    mc.setScreen(new net.minecraft.client.gui.screens.ChatScreen(""));
+                    rec(mc, "a_help");
+                    vNext(52);
+                }
+            }
+            case 52 -> {
+                if (since() == 120) {
+                    mc.setScreen(null);
+                    mc.gui.getChat().clearMessages(false);
+                    cmd(mc, "ab help 2");
+                    mc.setScreen(new net.minecraft.client.gui.screens.ChatScreen(""));
+                }
+                if (since() == 230) {
+                    mc.setScreen(null);
+                    tidy(mc);
+                    cmd(mc, "ab config");
+                }
+                if (since() == 280 && mc.screen != null) {
+                    var b = findButton(mc.screen, "打开");
+                    if (b != null) b.onPress();
+                }
+                if (since() == 370) {
+                    mc.setScreen(null);
+                    exitVideo(mc);
+                }
+            }
+            default -> {}
+        }
+    }
+
+    @SubscribeEvent
+    public static void onFrame(net.neoforged.neoforge.client.event.RenderFrameEvent.Post e) {
+        Recorder.onFrame();
     }
 
     /** 递归找界面里文字包含 text 的按钮 */
@@ -316,13 +543,13 @@ public final class AutoTest {
             log("放置模式 " + com.autobuilder.ABConfig.PLACE_MODE.get());
             fileFormatTest();
         }
-        if (ticks == 60) mc.setScreen(new com.autobuilder.gui.BuilderScreen());
-        if (ticks == 66) shot(mc, "gui");
-        if (ticks == 72) mc.setScreen(null);
+        if (ticks == 60 && !video) mc.setScreen(new com.autobuilder.gui.BuilderScreen());
+        if (ticks == 66 && !video) shot(mc, "gui");
+        if (ticks == 72 && !video) mc.setScreen(null);
         if (ticks == 20) {
             for (String c : new String[] {"gamerule doDaylightCycle false", "gamerule doWeatherCycle false", "time set 6000",
                     "weather clear", "difficulty peaceful", "gamemode survival", "clear @s", "gamerule doMobSpawning false",
-                    "gamerule sendCommandFeedback false", "gamerule keepInventory true"}) {
+                    "gamerule sendCommandFeedback false", "gamerule keepInventory true", "gamerule announceAdvancements false"}) {
                 cmd(mc, c);
             }
             mc.options.setCameraType(CameraType.THIRD_PERSON_BACK);
@@ -350,8 +577,8 @@ public final class AutoTest {
             if (supply) {
                 // 材料全放进身后两个木桶，背包塞满杂物，逼它先存杂物再取货
                 BlockPos me = mc.player.blockPosition();
-                BARRELS.add(me.offset(3, 0, 3));
-                BARRELS.add(me.offset(4, 0, 3));
+                BARRELS.add(video ? me.offset(10, 0, 4) : me.offset(3, 0, 3));
+                BARRELS.add(video ? me.offset(11, 0, 4) : me.offset(4, 0, 3));
                 for (BlockPos bpos : BARRELS) cmd(mc, "setblock " + bpos.getX() + " " + bpos.getY() + " " + bpos.getZ() + " minecraft:barrel");
                 int slot = 0;
                 for (var en : need.entrySet()) {
@@ -395,7 +622,7 @@ public final class AutoTest {
             log("材料 " + need.size() + " 种，共 " + need.values().stream().mapToInt(i -> i).sum() + " 个");
             if (!extra.isEmpty()) for (String c : extra.split(";")) cmd(mc, c.replace('_', ' '));
         }
-        if (ticks == 80) {
+        if (ticks == 80 && !(video && menu)) {
             Blueprint bp = testBlueprint();
             Placement p = Placement.inFrontOf(bp, mc.player.blockPosition(), Direction.NORTH);
             if (presetName.equals("sealbox")) p.setOrigin(mc.player.blockPosition().offset(-3, -1, -3)); // 人在盒子正中间
@@ -420,11 +647,12 @@ public final class AutoTest {
             mc.options.setCameraType(CameraType.THIRD_PERSON_BACK);
             faceBuilding(mc);
         }
-        if (ticks == 100) {
-            shot(mc, "before");
+        if (ticks == 100 && !(video && menu)) {
+            if (!video) shot(mc, "before");
             BuildController.start();
+            buildStarted = true;
         }
-        if (ticks > 100 && endTick < 0 && !(resume && ticks >= 400 && ticks <= 470)) {
+        if (ticks > 100 && endTick < 0 && buildStarted && !(resume && ticks >= 400 && ticks <= 470)) {
             if (ticks % 100 == 0) {
                 var s = BuildController.snapshot();
                 log(String.format("状态 %s/%s 进度 %s 待放 %s 待挖 %s 脚手架 %d 位置 %s 血 %.0f 饱食 %d | %s",
@@ -468,9 +696,11 @@ public final class AutoTest {
                 BlockPos c = p.origin().offset(p.sizeX() / 2, 0, p.sizeZ() / 2);
                 int d = Math.max(p.sizeX(), Math.max(p.sizeY(), p.sizeZ())) + (showcase ? 2 : 6);
                 int up = showcase ? 2 : 4;
-                cmd(mc, "tp @s " + (c.getX() + d) + " " + (c.getY() + p.sizeY() / 2 + up) + " " + (c.getZ() + d)
-                        + " facing " + c.getX() + " " + (c.getY() + p.sizeY() / 2) + " " + c.getZ());
-                mc.options.setCameraType(CameraType.FIRST_PERSON);
+                if (!video) {
+                    cmd(mc, "tp @s " + (c.getX() + d) + " " + (c.getY() + p.sizeY() / 2 + up) + " " + (c.getZ() + d)
+                            + " facing " + c.getX() + " " + (c.getY() + p.sizeY() / 2) + " " + c.getZ());
+                    mc.options.setCameraType(CameraType.FIRST_PERSON);
+                }
                 BuildController.stop();
                 endTick = ticks;
             }
@@ -479,8 +709,8 @@ public final class AutoTest {
             tidy(mc);
             mc.options.hideGui = true;
         }
-        if (endTick > 0 && ticks == endTick + 60) shot(mc, "final");
-        if (endTick > 0 && ticks == endTick + 90) {
+        if (endTick > 0 && ticks == endTick + 60 && !video) shot(mc, "final");
+        if (endTick > 0 && ticks == endTick + 90 && !video) {
             log("退出");
             mc.stop();
         }
