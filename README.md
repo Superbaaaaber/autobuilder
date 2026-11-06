@@ -1,4 +1,4 @@
-# AutoBuilder
+# Survival AutoBuilder
 
 A client-side NeoForge mod for Minecraft 1.21.1 that makes **your own player** build a structure from a schematic in survival mode. It walks there, places blocks, fixes mistakes, builds and removes its own scaffolding, and fetches materials from chests. The server does not need to install anything.
 
