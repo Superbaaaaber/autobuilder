@@ -1,0 +1,35 @@
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="${mod_license}"
+issueTrackerURL="https://github.com/Superbaaaaber/autobuilder/issues"
+
+[[mods]]
+modId="${mod_id}"
+version="${mod_version}"
+displayName="${mod_name}"
+authors="Superbaaaaber"
+displayURL="https://github.com/Superbaaaaber/autobuilder"
+logoFile="autobuilder.png"
+description='''
+Client-side survival auto builder: load a schematic (.litematic / .schem / .nbt / built-in presets) and your player walks, places blocks, fixes mistakes, fetches materials from chests and removes its scaffolding. No server install needed.
+纯客户端的生存自动建造 mod：加载蓝图后自动寻路、取材料、放方块、挖错块、搭脚手架并在完工后拆掉。服务器不需要安装。
+'''
+# 纯客户端 mod：进服时不要求服务器有同名 mod
+displayTest="IGNORE_ALL_VERSION"
+
+[[accessTransformers]]
+file="META-INF/accesstransformer.cfg"
+
+[[dependencies.${mod_id}]]
+    modId="neoforge"
+    type="required"
+    versionRange="[21.1.0,)"
+    ordering="NONE"
+    side="CLIENT"
+
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    type="required"
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="CLIENT"

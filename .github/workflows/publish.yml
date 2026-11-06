@@ -1,0 +1,66 @@
+name: Publish
+
+# 在 GitHub 上发布 Release 时：构建 jar，附到 Release，并上传到 Modrinth / CurseForge。
+# 需要的仓库设置（Settings → Secrets and variables → Actions）：
+#   Variables: MODRINTH_ID（Modrinth 项目 ID）、CURSEFORGE_ID（CurseForge 项目 ID）
+#   Secrets:   MODRINTH_TOKEN、CURSEFORGE_TOKEN
+# 没设置的平台会跳过。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew build
+
+      - name: Read version
+        id: ver
+        run: echo "version=$(grep '^mod_version=' gradle.properties | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Modrinth
+        if: vars.MODRINTH_ID != ''
+        uses: Kira-NT/mc-publish@v3.3
+        with:
+          modrinth-id: ${{ vars.MODRINTH_ID }}
+          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          files: build/libs/autobuilder-${{ steps.ver.outputs.version }}.jar
+          name: AutoBuilder ${{ steps.ver.outputs.version }}
+          version: ${{ steps.ver.outputs.version }}
+          version-type: release
+          changelog-file: CHANGELOG.md
+          loaders: neoforge
+          game-versions: 1.21.1
+          java: 21
+
+      - name: CurseForge
+        if: vars.CURSEFORGE_ID != ''
+        uses: Kira-NT/mc-publish@v3.3
+        with:
+          curseforge-id: ${{ vars.CURSEFORGE_ID }}
+          curseforge-token: ${{ secrets.CURSEFORGE_TOKEN }}
+          files: build/libs/autobuilder-${{ steps.ver.outputs.version }}.jar
+          name: AutoBuilder ${{ steps.ver.outputs.version }}
+          version: ${{ steps.ver.outputs.version }}
+          version-type: release
+          changelog-file: CHANGELOG.md
+          loaders: neoforge
+          game-versions: 1.21.1
+          java: 21
+
+      - name: Attach jar to GitHub release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" build/libs/autobuilder-${{ steps.ver.outputs.version }}.jar --clobber
