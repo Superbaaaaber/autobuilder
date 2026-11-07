@@ -42,6 +42,10 @@ public final class PathFinder {
         final int maxFall;
         final int scaffoldBlocks;
         final java.util.function.Predicate<BlockState> haveTargetItem;
+        /** 实际走不通的路段（PathFinder.moveKey），寻路时跳过 */
+        public java.util.Set<Long> badMoves = java.util.Set.of();
+        /** 能不能往水里垫方块（拆脚手架时不行：拆一块水流回来、再垫一块，会来回折腾） */
+        public boolean waterSupport = true;
         private final Long2ObjectOpenHashMap<BlockState> cache = new Long2ObjectOpenHashMap<>();
         private final BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
 
@@ -118,7 +122,9 @@ public final class PathFinder {
                 || b instanceof net.minecraft.world.level.block.piston.PistonHeadBlock
                 || b instanceof net.minecraft.world.level.block.piston.MovingPistonBlock
                 || b instanceof net.minecraft.world.level.block.SlimeBlock || b instanceof net.minecraft.world.level.block.HoneyBlock
-                || b instanceof net.minecraft.world.level.block.ScaffoldingBlock;
+                || b instanceof net.minecraft.world.level.block.ScaffoldingBlock
+                // 天然树叶：树干砍掉后会自己消失，站上去会掉下来
+                || b instanceof net.minecraft.world.level.block.LeavesBlock && !s.getValue(net.minecraft.world.level.block.LeavesBlock.PERSISTENT);
     }
 
     /** 脚下 3 格以内有岩浆：站在这里一旦脚下方块没了（被推走、被挖、活板门打开）就会掉进去 */
@@ -178,10 +184,16 @@ public final class PathFinder {
         return true;
     }
 
-    /** 这一格能不能垫一个方块（脚手架或者蓝图本来就要的整方块） */
+    /** 路段的键：从哪个落脚点走到哪个落脚点 */
+    public static long moveKey(BlockPos from, BlockPos to) {
+        return from.asLong() * 0x9E3779B97F4A7C15L ^ to.asLong();
+    }
+
+    /** 这一格能不能垫一个方块（脚手架或者蓝图本来就要的整方块）；水面上也能垫（方块直接把水顶掉） */
     static boolean canPutSupport(Ctx c, int x, int y, int z) {
         BlockState s = c.get(x, y, z);
-        if (!s.isAir() && !(StateMatcher.isSoft(s) && s.getFluidState().isEmpty())) return false;
+        boolean water = c.waterSupport && s.getBlock() instanceof net.minecraft.world.level.block.LiquidBlock && s.getFluidState().is(FluidTags.WATER);
+        if (!s.isAir() && !water && !(StateMatcher.isSoft(s) && s.getFluidState().isEmpty())) return false;
         if (dangerous(s) || lavaBelow(c, x, y, z)) return false;
         BlockPos p = new BlockPos(x, y, z);
         BlockState target = c.placement == null ? null : c.placement.targetAt(p);
@@ -267,6 +279,8 @@ public final class PathFinder {
                     double dh = hd - h;
                     if (dh > 1.2) continue;
                     int destTop = (int) Math.floor(hd + 1.79);
+                    // 跳上去或掉下去会把耕地踩回泥土
+                    if (Math.abs(dh) > 0.6 && c.get(nx, (int) Math.floor(hd - 0.01), nz).is(Blocks.FARMLAND)) break;
                     double cost;
                     Move mv;
                     if (dh > 0.6) {
@@ -359,6 +373,7 @@ public final class PathFinder {
     private static Node push(Ctx c, Node from, int x, int y, int z, double stand, Move mv, double cost, BlockPos place,
                              List<BlockPos> mine, Goal goal, Long2ObjectOpenHashMap<Node> best, PriorityQueue<Node> open) {
         long k = BlockPos.asLong(x, y, z);
+        if (!c.badMoves.isEmpty() && c.badMoves.contains(moveKey(new BlockPos(from.x, from.y, from.z), new BlockPos(x, y, z)))) return null;
         double g = from.g + cost;
         Node old = best.get(k);
         if (old != null && old.g <= g) return null;

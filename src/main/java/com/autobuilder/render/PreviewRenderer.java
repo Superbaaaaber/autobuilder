@@ -29,7 +29,23 @@ public final class PreviewRenderer {
     private static final MultiBufferSource.BufferSource GHOST_BUFFERS = MultiBufferSource.immediate(new ByteBufferBuilder(1 << 20));
     private static final int MAX_GHOSTS = 4000;
 
+    /** 手动隐藏投影（按 H 或主界面按钮切换） */
+    private static boolean hidden;
+
     private PreviewRenderer() {}
+
+    /** 现在要不要隐藏投影：手动隐藏了，或者设置了“建造时隐藏”且正在建造 */
+    public static boolean hidden() {
+        return hidden || ABConfig.HIDE_WHILE_BUILDING.get() && BuildController.state() == BuildController.State.RUNNING;
+    }
+
+    public static boolean manuallyHidden() {
+        return hidden;
+    }
+
+    public static void toggleHidden() {
+        hidden = !hidden;
+    }
 
     private static void renderSelection(RenderLevelStageEvent e, Minecraft mc, Vec3 cam) {
         BlockPos a = com.autobuilder.build.Selection.pos1(), b = com.autobuilder.build.Selection.pos2();
@@ -54,7 +70,7 @@ public final class PreviewRenderer {
         if (mc.level == null) return;
         Vec3 cam = e.getCamera().getPosition();
         renderSelection(e, mc, cam);
-        if (pl == null) return;
+        if (pl == null || hidden()) return;
         PoseStack ps = e.getPoseStack() != null ? e.getPoseStack() : new PoseStack();
         ps.pushPose();
         ps.translate(-cam.x, -cam.y, -cam.z);
@@ -76,6 +92,11 @@ public final class PreviewRenderer {
             for (BlockPos b : s.interact) {
                 if (b.distToCenterSqr(cam) > r2) continue;
                 LevelRenderer.renderLineBox(ps, lines, new AABB(b).inflate(0.004), 1f, 0.9f, 0.2f, 1f);
+            }
+            // 要抽水的格子：青色框
+            for (BlockPos b : s.drain) {
+                if (b.distToCenterSqr(cam) > r2) continue;
+                LevelRenderer.renderLineBox(ps, lines, new AABB(b).deflate(0.15), 0.2f, 0.9f, 0.9f, 1f);
             }
         }
         for (BlockPos b : BuildController.scaffold()) {

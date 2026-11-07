@@ -64,6 +64,17 @@ public final class AutoTest {
     private static boolean showcase;
     /** video：录宣传片素材（大窗口、电影镜头、ffmpeg 录像）；menu：小木屋从主界面选蓝图开始，最后演示帮助和设置 */
     private static boolean video, menu;
+    /** pool：把建筑放进一个 2 格深的水池里，测抽水（里面要抽干，外面的水不动） */
+    private static boolean pool;
+    /** savewater：开工前在旁边搭一个泡在湖里的小塔，测“保存时去掉外面的水”和选区木棍 */
+    private static boolean savewater;
+    private static BlockPos sceneBase;
+    /** chop / mine：测自动砍树、自动挖矿（不建蓝图） */
+    private static boolean chopTest, mineTest;
+    /** subst：材料全换成同类别的（橡木→云杉、白色→红色），测同类材料替换；nearby：材料放进没登记的木桶，测自动翻附近容器 */
+    private static boolean subst, nearby;
+    private static BlockPos gatherBase;
+    private static int gatherEnd = -1;
     private static int vt, vStage, vMark;
     private static boolean buildStarted, restockSeen;
     private static int restockDoneAt = -1;
@@ -93,6 +104,12 @@ public final class AutoTest {
             else if (p.equals("showcase")) showcase = true;
             else if (p.equals("video")) video = true;
             else if (p.equals("menu")) menu = true;
+            else if (p.equals("pool")) pool = true;
+            else if (p.equals("savewater")) savewater = true;
+            else if (p.equals("chop")) chopTest = true;
+            else if (p.equals("subst")) subst = true;
+            else if (p.equals("nearby")) nearby = true;
+            else if (p.equals("mine")) mineTest = true;
             else presetName = switch (p) {
                 case "cabin" -> "builtin:cabin";
                 case "tower" -> "builtin:tower";
@@ -104,6 +121,7 @@ public final class AutoTest {
 
     /** 测试用蓝图：sealbox = 全封闭石盒（没有门窗），人从盒子正中间开始 */
     private static Blueprint testBlueprint() throws IOException {
+        if (presetName.equals("farm")) return farmBlueprint();
         if (!presetName.equals("sealbox")) return BlueprintManager.load(presetName);
         Blueprint b = new Blueprint("sealbox", 7, 5, 7);
         BlockState stone = net.minecraft.world.level.block.Blocks.STONE.defaultBlockState();
@@ -115,6 +133,179 @@ public final class AutoTest {
                     b.set(x, y, z, shell ? stone : air);
                 }
         return b;
+    }
+
+    /**
+     * farm：7×2×7 的小田。外圈草方块（一角是泥土），北边一排土径，中间耕地围着一格水，耕地上种小麦。
+     * 测：草方块用泥土代替、泥土和草互相算对、先放泥土再锄地/铲土径、倒水、种子要等耕地。
+     */
+    private static Blueprint farmBlueprint() {
+        Blueprint b = new Blueprint("farm", 7, 2, 7);
+        BlockState air = net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
+        for (int z = 0; z < 7; z++)
+            for (int x = 0; x < 7; x++) {
+                boolean edge = x == 0 || x == 6 || z == 0 || z == 6;
+                BlockState g;
+                if (x == 3 && z == 3) g = net.minecraft.world.level.block.Blocks.WATER.defaultBlockState();
+                else if (z == 0 && x >= 1 && x <= 5) g = net.minecraft.world.level.block.Blocks.DIRT_PATH.defaultBlockState();
+                else if (x == 0 && z == 6) g = net.minecraft.world.level.block.Blocks.DIRT.defaultBlockState();
+                else if (edge) g = net.minecraft.world.level.block.Blocks.GRASS_BLOCK.defaultBlockState();
+                else g = net.minecraft.world.level.block.Blocks.FARMLAND.defaultBlockState();
+                b.set(x, 0, z, g);
+                boolean crop = !edge && !(x == 3 && z == 3) && (x + z) % 2 == 0;
+                b.set(x, 1, z, crop ? net.minecraft.world.level.block.Blocks.WHEAT.defaultBlockState() : air);
+            }
+        return b;
+    }
+
+    /**
+     * 砍树测试：出生点周围长三棵树（橡树、白桦、云杉），再立一根挨着木板的原木当“房子”（不该砍）。
+     * 挖矿测试：面前（北边）垒一块 11×4×28 的石头，里面放矿：一块贴着主巷顶上（露出来，要挖）、它上面再一块（矿脉，要挖）、
+     * 一块离巷道两格（藏着，不该挖）。
+     */
+    private static void gatherStep(Minecraft mc) {
+        BlockPos P = gatherBase;
+        if (ticks == 40) {
+            gatherBase = P = mc.player.blockPosition();
+            cmd(mc, "give @s minecraft:diamond_axe");
+            cmd(mc, "give @s minecraft:diamond_pickaxe");
+            cmd(mc, "give @s minecraft:diamond_shovel");
+            cmd(mc, "give @s minecraft:bread 16");
+            cmd(mc, "give @s minecraft:dirt 64");
+            if (chopTest) {
+                cmd(mc, "give @s minecraft:oak_sapling 2");
+                cmd(mc, "give @s minecraft:birch_sapling 1");
+                cmd(mc, "place feature minecraft:oak " + at(P, 6, 0, 0));
+                cmd(mc, "place feature minecraft:birch " + at(P, 0, 0, 8));
+                cmd(mc, "place feature minecraft:spruce " + at(P, -7, 0, 3));
+                cmd(mc, "setblock " + at(P, 9, 0, -7) + " minecraft:oak_log");
+                cmd(mc, "setblock " + at(P, 9, 1, -7) + " minecraft:oak_log");
+                cmd(mc, "setblock " + at(P, 10, 0, -7) + " minecraft:oak_planks");
+                cmd(mc, "setblock " + at(P, 10, 1, -7) + " minecraft:oak_planks");
+            } else {
+                cmd(mc, "fill " + at(P, -5, 0, -1) + " " + at(P, 5, 3, -28) + " minecraft:stone");
+                cmd(mc, "setblock " + at(P, 0, 2, -6) + " minecraft:iron_ore");
+                cmd(mc, "setblock " + at(P, 0, 3, -6) + " minecraft:iron_ore");
+                cmd(mc, "setblock " + at(P, 3, 0, -10) + " minecraft:diamond_ore");
+            }
+            log("砍树/挖矿测试场地 基点 " + P.toShortString());
+            return;
+        }
+        if (ticks == 100) {
+            if (chopTest) {
+                com.autobuilder.build.Gather.startChop(16);
+            } else {
+                mc.player.setYRot(180f);
+                mc.player.setXRot(0f);
+                mc.player.yRotO = 180f;
+                mc.player.xRotO = 0f;
+                com.autobuilder.build.Gather.startMine(20, 3);
+            }
+            return;
+        }
+        if (ticks < 100) return;
+        if (gatherEnd < 0) {
+            if (ticks % 100 == 0) {
+                var pl = BuildController.placement();
+                log(String.format("状态 %s %s 位置 %s | %s", BuildController.state(), pl == null ? "-" : pl.bp.name,
+                        mc.player.blockPosition().toShortString(), BuildController.activity()));
+            }
+            if (ticks % 600 == 0) shot(mc, "gather");
+            if (!com.autobuilder.build.Gather.active() || ticks > timeout) {
+                gatherEnd = ticks;
+                log("结束：" + (com.autobuilder.build.Gather.active() ? "超时 " : "") + BuildController.state() + " " + BuildController.activity());
+                if (chopTest) {
+                    int logs = 0, saplings = 0;
+                    BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+                    for (int y = -1; y <= 20; y++)
+                        for (int z = -14; z <= 14; z++)
+                            for (int x = -14; x <= 14; x++) {
+                                m.set(P.getX() + x, P.getY() + y, P.getZ() + z);
+                                BlockState s = mc.level.getBlockState(m);
+                                if (s.is(net.minecraft.tags.BlockTags.LOGS)) logs++;
+                                if (s.is(net.minecraft.tags.BlockTags.SAPLINGS)) saplings++;
+                            }
+                    boolean houseOk = mc.level.getBlockState(P.offset(9, 0, -7)).is(net.minecraft.world.level.block.Blocks.OAK_LOG)
+                            && mc.level.getBlockState(P.offset(9, 1, -7)).is(net.minecraft.world.level.block.Blocks.OAK_LOG);
+                    log("砍树结果：剩原木 " + logs + "（房子那 2 根应该还在：" + (houseOk ? "在" : "没了！") + "），补种树苗 " + saplings
+                            + ((logs == 2 && houseOk) ? " → 通过" : " → 失败"));
+                } else {
+                    boolean a = mc.level.getBlockState(P.offset(0, 2, -6)).isAir();
+                    boolean b = mc.level.getBlockState(P.offset(0, 3, -6)).isAir();
+                    boolean hidden = mc.level.getBlockState(P.offset(3, 0, -10)).is(net.minecraft.world.level.block.Blocks.DIAMOND_ORE);
+                    log("挖矿结果：露出来的铁矿 " + (a ? "挖了" : "没挖！") + "，矿脉上面那块 " + (b ? "挖了" : "没挖！") + "，藏着的钻石 "
+                            + (hidden ? "没动" : "被挖了！") + ((a && b && hidden) ? " → 通过" : " → 失败"));
+                }
+                StringBuilder inv = new StringBuilder();
+                var pinv = mc.player.getInventory();
+                for (int i = 0; i < 36; i++) {
+                    var it = pinv.getItem(i);
+                    if (!it.isEmpty()) inv.append(BuiltInRegistries.ITEM.getKey(it.getItem()).getPath()).append('x').append(it.getCount()).append(' ');
+                }
+                log("背包 " + inv);
+                shot(mc, "gather_final");
+            }
+            return;
+        }
+        if (ticks == gatherEnd + 40) {
+            log("退出");
+            mc.stop();
+        }
+    }
+
+    private static String at(BlockPos base, int x, int y, int z) {
+        return (base.getX() + x) + " " + (base.getY() + y) + " " + (base.getZ() + z);
+    }
+
+    /** savewater 场景：湖（9×3×9 水）里一个空心石塔，塔里一格水，塔外一个泡水的台阶、水面一片睡莲、湖底一棵海草 */
+    private static void buildWaterScene(Minecraft mc) {
+        BlockPos P = mc.player.blockPosition();
+        sceneBase = P.offset(4, -1, 4);
+        BlockPos B = sceneBase;
+        cmd(mc, "fill " + at(B, 0, 0, 0) + " " + at(B, 8, 2, 8) + " minecraft:water");
+        cmd(mc, "fill " + at(B, 2, 0, 2) + " " + at(B, 6, 2, 6) + " minecraft:stone hollow");
+        cmd(mc, "setblock " + at(B, 4, 1, 4) + " minecraft:water");
+        cmd(mc, "setblock " + at(B, 1, 1, 4) + " minecraft:stone_slab[type=bottom,waterlogged=true]");
+        cmd(mc, "setblock " + at(B, 1, 3, 1) + " minecraft:lily_pad");
+        cmd(mc, "setblock " + at(B, 7, 0, 7) + " minecraft:seagrass");
+        log("搭好湖中小塔 基点 " + B.toShortString());
+    }
+
+    /** 保存时去掉外面的水：选区 B+(1,0,1)~B+(7,3,7) */
+    private static void checkWaterSave(Minecraft mc) {
+        BlockPos B = sceneBase, a = B.offset(1, 0, 1), b = B.offset(7, 3, 7);
+        try {
+            var r = com.autobuilder.blueprint.BlueprintSaver.save(mc.level, a, b, "autotest_water", true, true);
+            Blueprint bp = com.autobuilder.blueprint.BlueprintLoader.load(r.path());
+            int bad = 0;
+            StringBuilder why = new StringBuilder();
+            for (int y = 0; y < bp.sy; y++)
+                for (int z = 0; z < bp.sz; z++)
+                    for (int x = 0; x < bp.sx; x++) {
+                        BlockPos w = a.offset(x, y, z);
+                        BlockState ws = mc.level.getBlockState(w);
+                        BlockState t = bp.get(x, y, z);
+                        int rx = w.getX() - B.getX(), ry = w.getY() - B.getY(), rz = w.getZ() - B.getZ();
+                        boolean inTower = rx >= 2 && rx <= 6 && rz >= 2 && rz <= 6 && ry <= 2;
+                        boolean wet = ws.is(net.minecraft.world.level.block.Blocks.WATER) || ws.is(net.minecraft.world.level.block.Blocks.SEAGRASS);
+                        if (wet && !inTower && t != null) {
+                            bad++;
+                            if (why.length() < 300) why.append(" 外面的水没去掉@").append(rx).append(',').append(ry).append(',').append(rz);
+                        }
+                    }
+            BlockState inner = bp.get(4 - 1, 1, 4 - 1);
+            BlockState slab = bp.get(1 - 1, 1, 4 - 1);
+            BlockState lily = bp.get(1 - 1, 3, 1 - 1);
+            boolean innerOk = inner != null && inner.is(net.minecraft.world.level.block.Blocks.WATER);
+            boolean slabOk = slab != null && slab.is(net.minecraft.world.level.block.Blocks.STONE_SLAB)
+                    && !slab.getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.WATERLOGGED);
+            boolean lilyOk = lily == null;
+            log("保存去湖水：去掉 " + r.droppedWater() + " 格，去含水 " + r.dried() + "，保留要放水 " + r.keptWater()
+                    + " | 外面残留 " + bad + why + " | 塔内水 " + (innerOk ? "保留" : "丢了！") + " | 台阶 " + (slabOk ? "已去含水" : "不对：" + slab)
+                    + " | 睡莲 " + (lilyOk ? "已去掉" : "还在！") + ((bad == 0 && innerOk && slabOk && lilyOk) ? " → 通过" : " → 失败"));
+        } catch (Exception ex) {
+            log("保存去湖水 出错 " + ex);
+        }
     }
 
     private static void log(String s) {
@@ -538,9 +729,15 @@ public final class AutoTest {
 
     private static void step(Minecraft mc) throws IOException {
         checkServerStates(mc);
+        if ((chopTest || mineTest) && ticks > 30) {
+            gatherStep(mc);
+            return;
+        }
         if (ticks == 5 && showcase) mc.getWindow().setWindowed(1600, 900);
         if (ticks == 10) {
             BuildController.debug = true;
+            // 测试窗口里误按方向键不要暂停（只改内存，不写进配置文件）
+            com.autobuilder.ABConfig.PAUSE_ON_INPUT.set(false);
             com.autobuilder.ABConfig.PLACE_MODE.set(adjacent ? com.autobuilder.ABConfig.PlaceMode.ADJACENT : com.autobuilder.ABConfig.PlaceMode.AIRPLACE);
             log("放置模式 " + com.autobuilder.ABConfig.PLACE_MODE.get());
             fileFormatTest();
@@ -576,11 +773,43 @@ public final class AutoTest {
                         if (it != null) need.merge(it, StateMatcher.itemsNeeded(t, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState()), Integer::sum);
                     }
             Integer water = need.remove(net.minecraft.world.item.Items.WATER_BUCKET);
-            if (supply) {
-                // 材料全放进身后两个木桶，背包塞满杂物，逼它先存杂物再取货
+            if (subst) {
+                // 每种能代替的材料都换成同一族里的另一种
+                Map<Item, Integer> swapped = new HashMap<>();
+                StringBuilder sb = new StringBuilder();
+                for (var en : need.entrySet()) {
+                    Item it = en.getKey();
+                    net.minecraft.world.level.block.Block b = net.minecraft.world.level.block.Block.byItem(it);
+                    var others = com.autobuilder.build.Substitutes.others(b);
+                    Item to = it;
+                    for (var o : others) {
+                        if (o.asItem() != net.minecraft.world.item.Items.AIR) {
+                            to = o.asItem();
+                            break;
+                        }
+                    }
+                    if (to != it) sb.append(BuiltInRegistries.ITEM.getKey(it).getPath()).append("→").append(BuiltInRegistries.ITEM.getKey(to).getPath()).append(' ');
+                    swapped.merge(to, en.getValue(), Integer::sum);
+                }
+                need.clear();
+                need.putAll(swapped);
+                log("同类替换：" + sb);
+            }
+            // 工具和吃的先给，免得材料把背包塞满后工具掉在地上
+            cmd(mc, "give @s minecraft:diamond_pickaxe");
+            cmd(mc, "give @s minecraft:diamond_shovel");
+            cmd(mc, "give @s minecraft:diamond_axe");
+            cmd(mc, "give @s minecraft:diamond_hoe");
+            cmd(mc, "give @s minecraft:bread 16");
+            int stacks = 0;
+            for (var en : need.entrySet()) stacks += (en.getValue() + 4 + en.getKey().getDefaultMaxStackSize() - 1) / en.getKey().getDefaultMaxStackSize();
+            // 背包放不下（大建筑）：材料放进旁边一排木桶当材料箱
+            boolean overflow = !supply && (stacks > 24 || nearby);
+            if (supply || overflow) {
+                // supply：材料全放进身后的木桶，背包塞满杂物，逼它先存杂物再取货
                 BlockPos me = mc.player.blockPosition();
-                BARRELS.add(video ? me.offset(10, 0, 4) : me.offset(3, 0, 3));
-                BARRELS.add(video ? me.offset(11, 0, 4) : me.offset(4, 0, 3));
+                int nb = Math.max(2, (stacks + 26) / 27);
+                for (int i = 0; i < nb; i++) BARRELS.add(video ? me.offset(10 + i, 0, 4) : me.offset(3 + i, 0, 3));
                 for (BlockPos bpos : BARRELS) cmd(mc, "setblock " + bpos.getX() + " " + bpos.getY() + " " + bpos.getZ() + " minecraft:barrel");
                 int slot = 0;
                 for (var en : need.entrySet()) {
@@ -595,12 +824,12 @@ public final class AutoTest {
                     }
                 }
                 cmd(mc, "give @s minecraft:dirt 192");
-                cmd(mc, "give @s minecraft:bread 16");
-                cmd(mc, "give @s minecraft:diamond_pickaxe");
-                cmd(mc, "give @s minecraft:diamond_shovel");
-                cmd(mc, "give @s minecraft:diamond_axe");
-                for (int i = 0; i < 28; i++) cmd(mc, "give @s minecraft:sandstone 64");
-                log("材料放进木桶 " + slot + " 组，背包塞了 28 组砂岩");
+                if (supply) {
+                    for (int i = 0; i < 28; i++) cmd(mc, "give @s minecraft:sandstone 64");
+                    log("材料放进木桶 " + slot + " 组，背包塞了 28 组砂岩");
+                } else {
+                    log("材料 " + stacks + " 组放进 " + nb + " 个木桶" + (nearby ? "（不登记，让它自己去附近找）" : ""));
+                }
                 need.clear();
             }
             for (var en : need.entrySet()) {
@@ -614,13 +843,9 @@ public final class AutoTest {
                 cmd(mc, "fill ~-1 ~-1 ~4 ~0 ~-1 ~5 minecraft:water");
                 log("需要水 " + water + " 桶，已给 3 桶 + 2 空桶 + 无限水源");
             }
-            if (!supply) {
-                cmd(mc, "give @s minecraft:dirt 192");
-                cmd(mc, "give @s minecraft:bread 16");
-                cmd(mc, "give @s minecraft:diamond_pickaxe");
-                cmd(mc, "give @s minecraft:diamond_shovel");
-                cmd(mc, "give @s minecraft:diamond_axe");
-            }
+            if (!supply && !overflow) cmd(mc, "give @s minecraft:dirt 192");
+            if (pool) cmd(mc, "give @s minecraft:bucket 2");
+            if (savewater) buildWaterScene(mc);
             log("材料 " + need.size() + " 种，共 " + need.values().stream().mapToInt(i -> i).sum() + " 个");
             if (!extra.isEmpty()) for (String c : extra.split(";")) cmd(mc, c.replace('_', ' '));
         }
@@ -628,10 +853,49 @@ public final class AutoTest {
             Blueprint bp = testBlueprint();
             Placement p = Placement.inFrontOf(bp, mc.player.blockPosition(), Direction.NORTH);
             if (presetName.equals("sealbox")) p.setOrigin(mc.player.blockPosition().offset(-3, -1, -3)); // 人在盒子正中间
+            if (pool) {
+                // 建筑整体下沉 2 格，四周多 3 格一起灌满水（泡在湖里）；人挪到水池南边岸上
+                p.move(0, -2, 0);
+                BlockPos o = p.origin(), mx = p.max();
+                String box = (o.getX() - 3) + " " + o.getY() + " " + (o.getZ() - 3) + " " + (mx.getX() + 3) + " " + (o.getY() + 1) + " " + (mx.getZ() + 3);
+                cmd(mc, "fill " + box + " minecraft:water");
+                cmd(mc, "tp @s " + (o.getX() + p.sizeX() / 2) + " " + (o.getY() + 2) + " " + (mx.getZ() + 6));
+                log("水池：" + box);
+            }
             BuildController.setPlacement(p);
             log("加载 " + p.describe() + " 玩家 " + mc.player.blockPosition().toShortString());
         }
-        if (ticks == 90 && supply) {
+        if (savewater && ticks == 70) checkWaterSave(mc);
+        if (savewater && ticks == 72) {
+            // 选区木棍：拿木棍对着塔角，左键=角1（用 give + 客户端换到手上，不覆盖别的物品）
+            BlockPos corner = sceneBase.offset(2, 2, 2);
+            cmd(mc, "give @s minecraft:stick");
+        }
+        if (savewater && ticks == 76) {
+            com.autobuilder.build.InventoryHelper.selectItem(mc, net.minecraft.world.item.Items.STICK);
+            // 镜头直接转向塔角中心（和录像脚本一样在客户端设朝向）
+            net.minecraft.world.phys.Vec3 eye = mc.player.getEyePosition();
+            net.minecraft.world.phys.Vec3 c = net.minecraft.world.phys.Vec3.atCenterOf(sceneBase.offset(2, 2, 2));
+            double dx = c.x - eye.x, dy = c.y - eye.y, dz = c.z - eye.z;
+            float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+            float pitch = (float) Math.toDegrees(Math.atan2(-dy, Math.sqrt(dx * dx + dz * dz)));
+            mc.player.setYRot(yaw);
+            mc.player.setXRot(pitch);
+            mc.player.yRotO = yaw;
+            mc.player.xRotO = pitch;
+        }
+        if (savewater && ticks == 79) {
+            com.autobuilder.build.Selection.clear();
+            var hit = mc.player.pick(com.autobuilder.build.SelectionWand.RANGE, 1f, false);
+            boolean used = com.autobuilder.build.SelectionWand.click(true);
+            BlockPos want = sceneBase.offset(2, 2, 2);
+            BlockPos got = com.autobuilder.build.Selection.pos1();
+            log("选区木棍：" + (used ? "拦下了点击" : "没拦下！") + " 角1=" + (got == null ? "null" : got.toShortString()) + " 期望 " + want.toShortString()
+                    + (want.equals(got) ? " → 通过" : " → 失败") + String.format(" | 朝向 %.1f/%.1f 手上 %s 射线 %s %s", mc.player.getYRot(), mc.player.getXRot(),
+                    mc.player.getMainHandItem().getItem(), hit.getType(), hit instanceof net.minecraft.world.phys.BlockHitResult bh ? bh.getBlockPos().toShortString() : ""));
+        }
+        if (savewater && ticks == 81) cmd(mc, "clear @s minecraft:stick");
+        if (ticks == 90 && !BARRELS.isEmpty() && !nearby) {
             com.autobuilder.build.SupplyManager.clear();
             for (BlockPos bpos : BARRELS) com.autobuilder.build.SupplyManager.add(bpos);
             log("登记材料箱 " + BARRELS);
@@ -735,7 +999,7 @@ public final class AutoTest {
                         log("  不符 " + b.toShortString() + " " + s + " 目标=" + t + " 实际=" + w);
                     }
                 }
-        log("校验结果 " + cnt + " 剩余脚手架 " + BuildController.scaffold().size());
+        log("校验结果 " + cnt + " 剩余脚手架 " + BuildController.scaffold().size() + " 没抽干 " + BuildController.drainLeft());
         // 存成 .nbt 再读回来，比较方块数
         try {
             Path f = com.autobuilder.blueprint.BlueprintSaver.save(mc.level, p.origin(), p.max(), "autotest_saved");

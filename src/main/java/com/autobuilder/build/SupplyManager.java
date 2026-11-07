@@ -122,6 +122,52 @@ public final class SupplyManager {
         return new ArrayList<>(CONTAINERS);
     }
 
+    public static boolean isRegistered(BlockPos pos) {
+        ensureLoaded();
+        return CONTAINERS.contains(pos);
+    }
+
+    /**
+     * 附近的箱子、木桶、潜影盒（没登记的也算），用来找缺的材料。
+     * 陷阱箱不碰（打开会发红石信号）；大箱子只算一半；蓝图里本来就要放的容器不算。
+     */
+    public static List<BlockPos> nearby(BlockPos center, int r) {
+        Minecraft mc = Minecraft.getInstance();
+        List<BlockPos> out = new ArrayList<>();
+        if (mc.level == null) return out;
+        Placement pl = BuildController.placement();
+        for (int cx = (center.getX() - r) >> 4; cx <= (center.getX() + r) >> 4; cx++) {
+            for (int cz = (center.getZ() - r) >> 4; cz <= (center.getZ() + r) >> 4; cz++) {
+                var ch = mc.level.getChunkSource().getChunk(cx, cz, false);
+                if (ch == null) continue;
+                for (var be : ch.getBlockEntities().values()) {
+                    boolean ok = be instanceof net.minecraft.world.level.block.entity.ChestBlockEntity
+                            && !(be instanceof net.minecraft.world.level.block.entity.TrappedChestBlockEntity)
+                            || be instanceof net.minecraft.world.level.block.entity.BarrelBlockEntity
+                            || be instanceof net.minecraft.world.level.block.entity.ShulkerBoxBlockEntity;
+                    if (!ok) continue;
+                    BlockPos p = be.getBlockPos();
+                    if (p.distSqr(center) > (double) r * r) continue;
+                    var st = be.getBlockState();
+                    if (st.hasProperty(net.minecraft.world.level.block.ChestBlock.TYPE)
+                            && st.getValue(net.minecraft.world.level.block.ChestBlock.TYPE) == net.minecraft.world.level.block.state.properties.ChestType.RIGHT) continue;
+                    if (pl != null && pl.targetAt(p) != null && !pl.targetAt(p).isAir()) continue;
+                    out.add(p.immutable());
+                }
+            }
+        }
+        return out;
+    }
+
+    /** 上次看到时有多少这种物品或它的同类代替品；没打开过返回 -1 */
+    public static int knownCountLike(BlockPos pos, Item item) {
+        Map<Item, Integer> m = SEEN.get(pos);
+        if (m == null) return -1;
+        int n = 0;
+        for (var e : m.entrySet()) if (Substitutes.sameItem(item, e.getKey())) n += e.getValue();
+        return n;
+    }
+
     public static boolean any() {
         ensureLoaded();
         return !CONTAINERS.isEmpty();

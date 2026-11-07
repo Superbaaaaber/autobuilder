@@ -24,6 +24,11 @@ public final class AutoEat {
 
     /** @return true 表示正在吃，这一 tick 不要做别的 */
     public static boolean tick(Minecraft mc) {
+        return tick(mc, false);
+    }
+
+    /** force：回血时用，没吃满就吃（饱食度 18 以上才会自然回血） */
+    public static boolean tick(Minecraft mc, boolean force) {
         LocalPlayer p = mc.player;
         if (eating) {
             ticks++;
@@ -34,7 +39,7 @@ public final class AutoEat {
             return true;
         }
         if (!ABConfig.AUTO_EAT.get()) return false;
-        if (p.getFoodData().getFoodLevel() >= ABConfig.EAT_BELOW.get()) return false;
+        if (p.getFoodData().getFoodLevel() >= (force ? 20 : ABConfig.EAT_BELOW.get())) return false;
         if (!InventoryHelper.select(mc, AutoEat::edible)) return false;
         if (mc.gameMode.useItem(p, InteractionHand.MAIN_HAND).consumesAction() && p.isUsingItem()) {
             mc.options.keyUse.setDown(true);

@@ -31,7 +31,15 @@ public final class Breaker {
         return pos;
     }
 
+    /** 连草、花这种一碰就掉的软方块也挖（平时软方块当作已经挖掉了） */
+    private boolean force;
+
     public void start(BlockPos p) {
+        start(p, false);
+    }
+
+    public void start(BlockPos p, boolean force) {
+        this.force = force;
         pos = p.immutable();
         progress = 0;
         started = false;
@@ -57,7 +65,7 @@ public final class Breaker {
         ClientLevel level = mc.level;
         if (pos == null || p == null) return;
         BlockState st = level.getBlockState(pos);
-        if (StateMatcher.isSoft(st)) {
+        if (force ? st.isAir() || st.getBlock() instanceof net.minecraft.world.level.block.LiquidBlock : StateMatcher.isSoft(st)) {
             finish(mc);
             return;
         }

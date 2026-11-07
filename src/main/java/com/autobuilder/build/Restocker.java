@@ -83,7 +83,7 @@ public final class Restocker {
 
     /** 缺料时调用。能出发去补货返回 true；没有可去的箱子返回 false */
     public static boolean start(Minecraft mc) {
-        if (!SupplyManager.any() || clock < idleUntil) return false;
+        if (!SupplyManager.any() && !com.autobuilder.ABConfig.SEARCH_CONTAINERS.get() || clock < idleUntil) return false;
         if (stage == null) {
             TRIED.clear();
             gotSomething = false;
@@ -101,11 +101,18 @@ public final class Restocker {
             if (TRIED.contains(c) || !SupplyManager.isContainer(c)) continue;
             order.add(c);
         }
+        // 没登记的附近容器也去翻一翻（登记的优先）
+        if (com.autobuilder.ABConfig.SEARCH_CONTAINERS.get()) {
+            for (BlockPos c : SupplyManager.nearby(p.blockPosition(), com.autobuilder.ABConfig.SEARCH_RADIUS.get())) {
+                if (TRIED.contains(c) || order.contains(c)) continue;
+                order.add(c);
+            }
+        }
         // 已知有货的优先，其次没打开过的；已知没货的不去
         order.removeIf(c -> {
             boolean unknown = false, has = false;
             for (Item it : WANT.keySet()) {
-                int k = SupplyManager.knownCount(c, it);
+                int k = SupplyManager.knownCountLike(c, it);
                 if (k < 0) unknown = true;
                 if (k > 0) has = true;
             }
@@ -114,6 +121,8 @@ public final class Restocker {
         order.sort((a, b) -> {
             int ka = knownScore(a), kb = knownScore(b);
             if (ka != kb) return Integer.compare(kb, ka);
+            boolean ra = SupplyManager.isRegistered(a), rb = SupplyManager.isRegistered(b);
+            if (ra != rb) return ra ? -1 : 1;
             return Double.compare(a.distToCenterSqr(p.position()), b.distToCenterSqr(p.position()));
         });
         for (BlockPos c : order) {
@@ -142,7 +151,7 @@ public final class Restocker {
 
     private static int knownScore(BlockPos c) {
         int n = 0;
-        for (Item it : WANT.keySet()) n += Math.max(0, SupplyManager.knownCount(c, it));
+        for (Item it : WANT.keySet()) n += Math.max(0, SupplyManager.knownCountLike(c, it));
         return n;
     }
 
@@ -236,7 +245,7 @@ public final class Restocker {
         if (s.isEmpty() || !(s.getItem() instanceof BlockItem)) return false;
         if (s.has(DataComponents.CONTAINER) || s.has(DataComponents.BLOCK_ENTITY_DATA)) return false;
         Scanner.Snapshot snap = BuildController.snapshot();
-        if (snap != null && snap.need.containsKey(s.getItem())) return false;
+        if (snap != null && snap.need.keySet().stream().anyMatch(n -> Substitutes.sameItem(n, s.getItem()))) return false;
         return !ScaffoldItems.items().contains(s.getItem());
     }
 
@@ -250,33 +259,47 @@ public final class Restocker {
         return false;
     }
 
+    /** 箱子里这个物品顶哪一项需求：pass 0 只认一模一样的，pass 1 也认同类代替品（别的木头/颜色） */
+    private static Item wantKey(Item it, int pass) {
+        if (WANT.getOrDefault(it, 0) > 0) return pass == 0 ? it : null;
+        if (pass == 0) return null;
+        for (var e : WANT.entrySet()) {
+            if (e.getValue() > 0 && Substitutes.sameItem(e.getKey(), it)) return e.getKey();
+        }
+        return null;
+    }
+
     /** 做几次点击；还有事可做返回 true */
     private static boolean transferStep(Minecraft mc) {
         LocalPlayer p = mc.player;
         AbstractContainerMenu menu = p.containerMenu;
         int clicks = 0;
         boolean more = false;
-        for (Slot s : menu.slots) {
-            if (clicks >= 4) return true;
-            if (s.container == p.getInventory() || !s.hasItem()) continue;
-            Item it = s.getItem().getItem();
-            int want = WANT.getOrDefault(it, 0);
-            if (want <= 0) continue;
-            if (!playerHasRoomFor(p, it)) {
-                // 背包满：先存一件杂物
-                if (depositOneJunk(mc, menu)) {
-                    clicks++;
-                    more = true;
-                    continue;
+        // 先拿蓝图要的那种，不够再拿同类代替品
+        for (int pass = 0; pass < 2; pass++) {
+            for (Slot s : menu.slots) {
+                if (clicks >= 4) return true;
+                if (s.container == p.getInventory() || !s.hasItem()) continue;
+                Item it = s.getItem().getItem();
+                Item key = wantKey(it, pass);
+                if (key == null) continue;
+                int want = WANT.get(key);
+                if (!playerHasRoomFor(p, it)) {
+                    // 背包满：先往登记的材料箱存一件杂物（自己翻到的别人的箱子不往里塞东西）
+                    if (SupplyManager.isRegistered(target) && depositOneJunk(mc, menu)) {
+                        clicks++;
+                        more = true;
+                        continue;
+                    }
+                    return false; // 装不下了
                 }
-                return false; // 没杂物可存，装不下了
+                int n = s.getItem().getCount();
+                mc.gameMode.handleInventoryMouseClick(menu.containerId, s.index, 0, ClickType.QUICK_MOVE, p);
+                WANT.put(key, want - n);
+                gotSomething = true;
+                clicks++;
+                more = true;
             }
-            int n = s.getItem().getCount();
-            mc.gameMode.handleInventoryMouseClick(menu.containerId, s.index, 0, ClickType.QUICK_MOVE, p);
-            WANT.put(it, want - n);
-            gotSomething = true;
-            clicks++;
-            more = true;
         }
         return more && clicks > 0;
     }

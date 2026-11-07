@@ -20,6 +20,7 @@ public final class ClientEvents {
     public static void onTickPre(ClientTickEvent.Pre e) {
         try {
             BuildController.tick();
+            com.autobuilder.build.Gather.tick();
         } catch (RuntimeException ex) {
             AutoBuilder.LOG.error("AutoBuilder tick 出错", ex);
             BuildController.stop();
@@ -47,9 +48,28 @@ public final class ClientEvents {
             com.autobuilder.build.Selection.set(2, p);
             BuildController.msg(Lang.t("msg.corner", 2, p.toShortString(), com.autobuilder.build.Selection.describe()), net.minecraft.ChatFormatting.YELLOW);
         }
+        while (Keys.HIDE.consumeClick()) togglePreview();
         while (Keys.LOAD_HERE.consumeClick()) {
             Placement p = BuildController.placement();
             if (p != null) p.setOrigin(mc.player.blockPosition());
+        }
+    }
+
+    /** 隐藏/显示投影：隐藏时照常建造，只是看不到半透明方块和框 */
+    public static void togglePreview() {
+        com.autobuilder.render.PreviewRenderer.toggleHidden();
+        boolean h = com.autobuilder.render.PreviewRenderer.manuallyHidden();
+        BuildController.msg(h ? Lang.t("msg.preview_hidden", Keys.HIDE.getTranslatedKeyMessage().getString()) : Lang.t("msg.preview_shown"),
+                net.minecraft.ChatFormatting.AQUA);
+    }
+
+    /** 选区木棍：拿着木棍左键/右键设选区角，点击不会真的挖方块或用方块 */
+    @SubscribeEvent
+    public static void onClickInput(net.neoforged.neoforge.client.event.InputEvent.InteractionKeyMappingTriggered e) {
+        if (e.getHand() != net.minecraft.world.InteractionHand.MAIN_HAND || !(e.isAttack() || e.isUseItem())) return;
+        if (com.autobuilder.build.SelectionWand.click(e.isAttack())) {
+            e.setCanceled(true);
+            e.setSwingHand(true);
         }
     }
 

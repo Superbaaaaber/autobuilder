@@ -13,6 +13,8 @@ public final class Keys {
     public static final KeyMapping LOAD_HERE = new KeyMapping("key.autobuilder.here", InputConstants.UNKNOWN.getValue(), CATEGORY);
     public static final KeyMapping POS1 = new KeyMapping("key.autobuilder.pos1", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_LEFT_BRACKET, CATEGORY);
     public static final KeyMapping POS2 = new KeyMapping("key.autobuilder.pos2", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_BRACKET, CATEGORY);
+    /** 隐藏/显示投影（隐藏时照常干活） */
+    public static final KeyMapping HIDE = new KeyMapping("key.autobuilder.hide", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_H, CATEGORY);
 
     private Keys() {}
 
@@ -23,5 +25,6 @@ public final class Keys {
         e.register(LOAD_HERE);
         e.register(POS1);
         e.register(POS2);
+        e.register(HIDE);
     }
 }

@@ -296,6 +296,25 @@ public final class Placer {
     /** 调试：最近的放置记录（位置、客户端结果、yaw、pitch、已过 tick） */
     public static final java.util.List<Object[]> DEBUG_LOG = new java.util.ArrayList<>();
 
+    /** 拿着工具右键方块顶面：锄头把泥土变耕地、铲子把泥土变土径（都不能点底面） */
+    public static boolean useTool(Minecraft mc, BlockPos pos, java.util.function.Predicate<ItemStack> tool) {
+        LocalPlayer p = mc.player;
+        if (!InventoryHelper.select(mc, tool)) return false;
+        Vec3 eye = p.getEyePosition();
+        Vec3 c = Vec3.atCenterOf(pos);
+        Direction face = Direction.getNearest(eye.x - c.x, eye.y - c.y, eye.z - c.z);
+        if (face == Direction.DOWN) face = Direction.UP;
+        Vec3 loc = c.add(face.getStepX() * 0.5, face.getStepY() * 0.5, face.getStepZ() * 0.5);
+        BlockHitResult hit = new BlockHitResult(loc, face, pos, false);
+        if (p.isShiftKeyDown()) {
+            p.connection.send(new ServerboundPlayerCommandPacket(p, ServerboundPlayerCommandPacket.Action.RELEASE_SHIFT_KEY));
+            p.setShiftKeyDown(false);
+        }
+        InteractionResult r = mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, hit);
+        if (r.shouldSwing()) p.swing(InteractionHand.MAIN_HAND);
+        return r.consumesAction();
+    }
+
     /** 右键已有方块（调中继器延迟、音符盒音高、开关门等） */
     public static boolean interact(Minecraft mc, BlockPos pos) {
         LocalPlayer p = mc.player;

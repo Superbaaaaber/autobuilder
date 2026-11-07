@@ -25,6 +25,10 @@ public final class PathExecutor {
     private BlockPos goal;
     private boolean failed;
     private int invalidations;
+    /** 开始这条路时脚下的格子（第一步的起点） */
+    private BlockPos startPos;
+    /** 上一次失败卡在哪一步（PathFinder.moveKey），0 表示没有 */
+    private long failedMove;
 
     // 本 tick 要施加的输入
     private boolean control;
@@ -34,6 +38,8 @@ public final class PathExecutor {
     public void setPath(List<PathFinder.Step> p, BlockPos goal) {
         this.path = p;
         this.goal = goal;
+        var pl = net.minecraft.client.Minecraft.getInstance().player;
+        this.startPos = pl == null ? null : BlockPos.containing(pl.getX(), pl.getY() + 0.01, pl.getZ());
         this.idx = 0;
         this.stepTicks = 0;
         this.stuckTicks = 0;
@@ -58,6 +64,18 @@ public final class PathExecutor {
 
     public BlockPos goal() {
         return goal;
+    }
+
+    /** 上一次失败的路段（读取后清零） */
+    public long failedMove() {
+        long m = failedMove;
+        failedMove = 0;
+        return m;
+    }
+
+    /** 当前这一步的起点：上一个落脚点，第一步就是出发的位置 */
+    private BlockPos stepFrom() {
+        return idx > 0 ? path.get(idx - 1).pos() : startPos;
     }
 
     /** 上一条路径是不是因为卡住/走不通而放弃的（读取后清零） */
@@ -89,7 +107,18 @@ public final class PathExecutor {
         return Lang.t("act.path", idx + 1, path.size(), path.get(idx).move());
     }
 
-    private void fail() {
+    private void fail(String why) {
+        if (path != null && idx < path.size()) {
+            PathFinder.Step s = path.get(idx);
+            BlockPos from = stepFrom();
+            if (from != null) failedMove = PathFinder.moveKey(from, s.pos());
+            if (BuildController.debug) {
+                var p = net.minecraft.client.Minecraft.getInstance().player;
+                com.autobuilder.AutoBuilder.LOG.info("[AB] 走不通（{}）第 {}/{} 步 {} {}→{} 人在 {}", why, idx + 1, path.size(), s.move(),
+                        from == null ? "?" : from.toShortString(), s.pos().toShortString(),
+                        p == null ? "?" : String.format("%.2f,%.2f,%.2f", p.getX(), p.getY(), p.getZ()));
+            }
+        }
         path = null;
         failed = true;
     }
@@ -131,7 +160,7 @@ public final class PathExecutor {
         PathFinder.Step s = path.get(idx);
         stepTicks++;
         if (stepTicks > 200) {
-            fail();
+            fail("超时");
             return;
         }
         // ---- 走之前要先完成的动作 ----
@@ -151,7 +180,7 @@ public final class PathExecutor {
         if ((s.move() == PathFinder.Move.BRIDGE || s.move() == PathFinder.Move.STEP_DOWN)
                 && s.place() != null && StateMatcher.isSoft(mc.level.getBlockState(s.place()))) {
             if (!BuildController.placeSupport(s.place())) {
-                if (stepTicks > 20) fail();
+                if (stepTicks > 20) fail("垫不上方块");
             }
             return;
         }
@@ -159,8 +188,19 @@ public final class PathExecutor {
             BlockPos pl = s.place();
             if (StateMatcher.isSoft(mc.level.getBlockState(pl))) {
                 double cx = pl.getX() + 0.5 - p.getX(), cz = pl.getZ() + 0.5 - p.getZ();
+                // 人根本不在柱子那格附近（掉下去了、被推开了）：别耗着，马上重新找路
+                if (p.onGround() && (cx * cx + cz * cz > 1.5 * 1.5 || p.getY() < pl.getY() - 0.5)) {
+                    fail("不在柱子位置");
+                    return;
+                }
                 if (cx * cx + cz * cz > 0.04 && p.onGround()) {
                     moveToward(p, cx, cz, 0.5f);
+                    if (p.position().distanceToSqr(lastPos) < 0.0004) {
+                        if (++stuckTicks > 20) fail("走不到柱子位置");
+                    } else {
+                        stuckTicks = 0;
+                    }
+                    lastPos = p.position();
                     return;
                 }
                 if (p.onGround()) {
@@ -168,7 +208,7 @@ public final class PathExecutor {
                     return;
                 }
                 if (p.getY() >= pl.getY() + 1.0) {
-                    if (!BuildController.placeSupport(pl) && stepTicks > 40) fail();
+                    if (!BuildController.placeSupport(pl) && stepTicks > 40) fail("柱子垫不上");
                 }
                 return;
             }
@@ -198,20 +238,37 @@ public final class PathExecutor {
             dist = Math.sqrt(dx * dx + dz * dz);
         }
         // 偏离路线太远（被推开、掉下去）就重新找路
-        if (dist > 3.5 || p.getY() < s.standY() - 4) {
-            fail();
+        if (dist > 3.5 || p.getY() < s.standY() - 4 || p.onGround() && p.getY() < s.standY() - 2.5) {
+            fail("偏离路线");
             return;
         }
         float speed = dist < 0.6 ? 0.4f : 1.0f;
         moveToward(p, dx, dz, speed);
         if ((s.move() == PathFinder.Move.ASCEND || s.standY() - p.getY() > 0.6) && p.onGround() && dist < 1.5) {
-            jump = true;
+            // 起跳前先站到正对台阶的位置：歪着跳，头会撞到旁边格子上方的方块，原地反复跳
+            BlockPos from = stepFrom();
+            double lat = 0, ux = 0, uz = 0;
+            if (from != null) {
+                ux = tx - (from.getX() + 0.5);
+                uz = tz - (from.getZ() + 0.5);
+                double ul = Math.sqrt(ux * ux + uz * uz);
+                if (ul > 0.5) {
+                    ux /= ul;
+                    uz /= ul;
+                    lat = (p.getX() - from.getX() - 0.5) * -uz + (p.getZ() - from.getZ() - 0.5) * ux;
+                }
+            }
+            if (Math.abs(lat) > 0.18 && stuckTicks < 10) {
+                moveToward(p, lat * uz, -lat * ux, 0.35f);
+            } else {
+                jump = true;
+            }
         }
         // 卡住检测
         if (p.position().distanceToSqr(lastPos) < 0.0004) {
             stuckTicks++;
             if (stuckTicks > 15 && p.onGround()) jump = true;
-            if (stuckTicks > 40) fail();
+            if (stuckTicks > 40) fail("卡住");
         } else {
             stuckTicks = 0;
         }

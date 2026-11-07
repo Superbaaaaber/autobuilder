@@ -74,14 +74,23 @@ public class BuilderScreen extends Screen {
         addRenderableWidget(btn(Lang.t("gui.refresh"), x, y, bw, () -> rebuildWidgets()));
         addRenderableWidget(btn(Lang.t("gui.tools"), x + bw + gap, y, bw, () -> minecraft.setScreen(new ToolsScreen(this))));
 
-        // 右上角：设置、指令帮助
+        // 右上角：设置、指令帮助、隐藏投影
         int sw1 = Math.max(50, font.width(Lang.t("gui.settings")) + 12);
         int sw2 = Math.max(56, font.width(Lang.t("gui.help")) + 12);
+        int sw3 = Math.max(60, Math.max(font.width(Lang.t("gui.hide_preview")), font.width(Lang.t("gui.show_preview"))) + 12);
         addRenderableWidget(btn(Lang.t("gui.settings"), width - 10 - sw1, 5, sw1, () -> com.autobuilder.AutoBuilder.openConfig(this)));
         addRenderableWidget(btn(Lang.t("gui.help"), width - 10 - sw1 - 4 - sw2, 5, sw2, () -> {
             onClose();
             minecraft.player.connection.sendCommand("ab help");
         }));
+        addRenderableWidget(Button.builder(Component.literal(previewLabel()), b -> {
+            com.autobuilder.ClientEvents.togglePreview();
+            b.setMessage(Component.literal(previewLabel()));
+        }).bounds(width - 10 - sw1 - 4 - sw2 - 4 - sw3, 5, sw3, 20).build());
+    }
+
+    private static String previewLabel() {
+        return Lang.t(com.autobuilder.render.PreviewRenderer.manuallyHidden() ? "gui.show_preview" : "gui.hide_preview");
     }
 
     private Button btn(String text, int x, int y, int w, Runnable r) {

@@ -75,6 +75,19 @@ public final class BuildController {
     private static final Map<BlockPos, Integer> FLUID_FAILS = new HashMap<>();
     private static String activity = "";
     private static final Map<Item, Integer> MISSING = new LinkedHashMap<>();
+    /** 抽水时填进去的方块（同时在 SCAFFOLD 里）：周围没水了就提前挖回来，省方块 */
+    private static final Set<BlockPos> DRAIN_FILL = new HashSet<>();
+    /** 建好后会被外面的水重新灌满的格子：这些地方抽了也白抽，不抽 */
+    private static final Set<Long> FLOOD = new HashSet<>();
+    private static int floodVersion = -1, floodTick = -100000;
+    /** 血量低：停下来吃东西回血，回够了自己接着干 */
+    private static boolean resting;
+    private static int restStart;
+    /** 溺水自救的目标（附近能站的干地） */
+    private static Vec3 escapeTarget;
+    private static int escapeTargetTick = -100000;
+    /** 走不通的路段（起点→终点）：一段时间内寻路不再走这一步，免得在同一个地方反复跳 */
+    private static final Map<Long, Integer> BAD_MOVES = new HashMap<>();
     /** 开发测试时打开，记录每次挖/放 */
     public static boolean debug;
 
@@ -91,6 +104,46 @@ public final class BuildController {
     public static PathExecutor walker() { return WALKER; }
     public static Set<BlockPos> scaffold() { return SCAFFOLD; }
     public static Map<Item, Integer> missing() { return MISSING; }
+    /** 还没抽干、而且值得抽的格子数（测试用） */
+    public static long drainLeft() {
+        Scanner.Snapshot s = SCANNER.snapshot();
+        return s == null ? 0 : s.drain.stream().filter(BuildController::drainable).count();
+    }
+
+    /** 砍树/挖矿的临时蓝图里，空气位置一律要清掉、不对的方块一律要挖 */
+    private static boolean clearAir() {
+        return ABConfig.CLEAR_AIR.get() || placement != null && placement.temporary;
+    }
+
+    private static boolean breakWrong() {
+        return ABConfig.BREAK_WRONG.get() || placement != null && placement.temporary;
+    }
+
+    /** 砍树/挖矿驱动时不刷“开始建造/建造完成”这类消息 */
+    public static boolean quiet;
+
+    /** 开始砍树/挖矿前：把正在建的蓝图存成断点收起来，结束后会像重进世界一样提示继续 */
+    public static void parkForGather() {
+        if (placement != null && !placement.temporary && state != State.DONE) SessionStore.save(placementKey, placement, SCAFFOLD);
+        stop();
+        placement = null;
+        SCANNER.reset();
+        SCAFFOLD.clear();
+        DRAIN_FILL.clear();
+        restoreChecked = true;
+    }
+
+    /** 砍树/挖矿结束：收起临时蓝图，之前收起的建筑断点会自动提示 */
+    public static void endTemporary() {
+        stop();
+        placement = null;
+        SCANNER.reset();
+        SCAFFOLD.clear();
+        DRAIN_FILL.clear();
+        state = State.IDLE;
+        restoreChecked = false;
+        quiet = false;
+    }
 
     public static double reach() {
         return ABConfig.REACH.get();
@@ -100,6 +153,9 @@ public final class BuildController {
         stop();
         placement = p;
         SCAFFOLD.clear();
+        DRAIN_FILL.clear();
+        floodVersion = -1;
+        Substitutes.reset();
         SCANNER.reset();
         state = State.IDLE;
         restoreChecked = true;
@@ -109,10 +165,12 @@ public final class BuildController {
 
     public static void unload() {
         stop();
-        if (placement != null) SessionStore.remove(placementKey);
+        Gather.cancel();
+        if (placement != null && !placement.temporary) SessionStore.remove(placementKey);
         placement = null;
         SCANNER.reset();
         SCAFFOLD.clear();
+        DRAIN_FILL.clear();
     }
 
     public static void start() {
@@ -140,9 +198,12 @@ public final class BuildController {
         ATTEMPTS.clear();
         warnedRejected = false;
         MISSING.clear();
+        BAD_MOVES.clear();
+        resting = false;
+        floodVersion = -1;
         SCANNER.restart();
         activity = Lang.t("act.start");
-        msg(Lang.t("msg.start", placement.bp.name), ChatFormatting.GREEN);
+        if (!quiet) msg(Lang.t("msg.start", placement.bp.name), ChatFormatting.GREEN);
     }
 
     public static void pause(String why) {
@@ -178,6 +239,7 @@ public final class BuildController {
         placement = null;
         SCANNER.reset();
         SCAFFOLD.clear();
+        DRAIN_FILL.clear();
         restoreChecked = false;
     }
 
@@ -186,7 +248,7 @@ public final class BuildController {
         SessionStore.remove(placementKey);
         halt();
         activity = text;
-        msg(text, ChatFormatting.GREEN);
+        if (!quiet) msg(text, ChatFormatting.GREEN);
     }
 
     public static void msg(String text, ChatFormatting color) {
@@ -229,6 +291,7 @@ public final class BuildController {
         // 定期保存断点（位置、旋转或脚手架有变化时）
         if (tick % 40 == 0 && state != State.DONE) SessionStore.save(placementKey, placement, SCAFFOLD); // 建完的不再存，免得下次进世界提示“没建完”
         Placer.tickRotation(p, tick);
+        StateMatcher.drainBlocked = placement.temporary;
         SCANNER.tick(placement, level, 30000, SCAFFOLD);
         if (state == State.RUNNING && !ServerPolicy.allowed()) {
             stop();
@@ -251,14 +314,23 @@ public final class BuildController {
             return;
         }
         if (p.onGround() && !p.isInWater() && p.hurtTime == 0) lastSafe = p.position();
-        if (p.getHealth() < ABConfig.STOP_BELOW_HEALTH.get()) {
-            pause(Lang.t("reason.low_health"));
-            return;
-        }
         if (ABConfig.PAUSE_ON_INPUT.get() && userMoving()) {
             pause(Lang.t("reason.manual_move"));
             return;
         }
+        // 头没进水里、或者在深水里游：先浮上来上岸换气，不在水里干活（会憋死）
+        if (p.isUnderWater() || p.isInWater() && !p.onGround()) {
+            BREAKER.cancel(MC);
+            AutoEat.release(MC);
+            if (escapeTarget == null || tick - escapeTargetTick > 20) {
+                escapeTarget = dryLandNear(p, level);
+                escapeTargetTick = tick;
+            }
+            WALKER.escape(p, escapeTarget);
+            activity = Lang.t("act.surface", p.getAirSupply() * 100 / Math.max(1, p.getMaxAirSupply()));
+            return;
+        }
+        escapeTarget = null;
         if (Restocker.active()) {
             activity = Restocker.describe();
             Restocker.tick(MC);
@@ -271,6 +343,8 @@ public final class BuildController {
         }
         PENDING.entrySet().removeIf(e -> e.getValue() <= tick);
         BLACKLIST.entrySet().removeIf(e -> e.getValue() <= tick);
+        BAD_MOVES.entrySet().removeIf(e -> e.getValue() <= tick);
+        if (rest(p, level)) return;
 
         if (AutoEat.tick(MC)) {
             activity = Lang.t("act.eating");
@@ -285,6 +359,8 @@ public final class BuildController {
         }
         if (WALKER.consumeFailed()) {
             goalFails++;
+            long bad = WALKER.failedMove();
+            if (bad != 0) BAD_MOVES.put(bad, tick + 1200);
             BlockPos g = WALKER.goal();
             if (g != null && goalFails >= 2) {
                 BLACKLIST.put(g, tick + 400);
@@ -297,6 +373,7 @@ public final class BuildController {
             return;
         }
         updateBarrier(p, level);
+        updateFlood(level);
         if (doReachableWork(p, level)) {
             cooldown = ABConfig.ACTION_DELAY.get();
             noTargetTicks = 0;
@@ -313,6 +390,223 @@ public final class BuildController {
         WALKER.tick(MC);
     }
 
+    /**
+     * 血量低于设定值：停手、吃东西回血，回到设定值 +6（或满血）自动继续。
+     * 回血时还在挨打（多半是怪），或者没吃的回不了血，才暂停交给玩家。
+     */
+    private static boolean rest(LocalPlayer p, ClientLevel level) {
+        int stopBelow = ABConfig.STOP_BELOW_HEALTH.get();
+        if (!resting) {
+            if (p.getHealth() >= stopBelow) return false;
+            resting = true;
+            restStart = tick;
+            BREAKER.cancel(MC);
+            msg(Lang.t("msg.resting"), ChatFormatting.YELLOW);
+        }
+        float want = Math.min(p.getMaxHealth(), stopBelow + 6);
+        if (p.getHealth() >= want) {
+            resting = false;
+            msg(Lang.t("msg.rested"), ChatFormatting.GREEN);
+            return false;
+        }
+        WALKER.hold();
+        if (p.hurtTime > 0 && tick - restStart > 20) {
+            resting = false;
+            pause(Lang.t("reason.low_health"));
+            return true;
+        }
+        if (AutoEat.tick(MC, true)) {
+            activity = Lang.t("act.eating");
+            return true;
+        }
+        boolean peaceful = level.getDifficulty() == net.minecraft.world.Difficulty.PEACEFUL;
+        if (!peaceful && p.getFoodData().getFoodLevel() < 18) {
+            resting = false;
+            pause(Lang.t("reason.low_health_hungry"));
+            return true;
+        }
+        activity = Lang.t("act.resting", (int) Math.ceil(p.getHealth()), (int) want);
+        return true;
+    }
+
+    private static PathFinder.Ctx newCtx(LocalPlayer p, ClientLevel level) {
+        PathFinder.Ctx ctx = new PathFinder.Ctx(level, placement, SCAFFOLD, ABConfig.ALLOW_SCAFFOLD.get(),
+                ABConfig.ALLOW_DIG.get(), ABConfig.MAX_FALL.get(), ScaffoldItems.available(p, placement, SCANNER.snapshot()),
+                st -> {
+                    Item it = Substitutes.pick(p, st);
+                    return it != null && InventoryHelper.count(p, it) > 0;
+                });
+        ctx.badMoves = BAD_MOVES.keySet();
+        ctx.waterSupport = phase == Phase.BUILD;
+        return ctx;
+    }
+
+    /** 附近最近的能站的干地（溺水时往那边游）；找不到就用上次站稳的位置 */
+    private static Vec3 dryLandNear(LocalPlayer p, ClientLevel level) {
+        PathFinder.Ctx ctx = newCtx(p, level);
+        BlockPos c = p.blockPosition();
+        Vec3 best = null;
+        double bestD = Double.MAX_VALUE;
+        for (int dy = -2; dy <= 4; dy++)
+            for (int dz = -8; dz <= 8; dz++)
+                for (int dx = -8; dx <= 8; dx++) {
+                    int x = c.getX() + dx, y = c.getY() + dy, z = c.getZ() + dz;
+                    double h = PathFinder.stand(ctx, x, y, z);
+                    if (Double.isNaN(h)) continue;
+                    double d = dx * dx + dz * dz + Math.max(0, dy) * 2.0; // 往上爬稍微贵一点
+                    if (d < bestD) {
+                        bestD = d;
+                        best = new Vec3(x + 0.5, h, z + 0.5);
+                    }
+                }
+        return best != null ? best : lastSafe;
+    }
+
+    /**
+     * 算一遍“建好以后会被外面的水灌进来”的格子：从包围盒外紧贴的一圈、以及蓝图不管的格子里现有的水出发，
+     * 只往水平和下方扩散（水不会往上流），穿过最终建筑里挡不住水的格子。这些格子抽了也白抽。
+     */
+    private static void updateFlood(ClientLevel level) {
+        if (placement.version() == floodVersion && tick - floodTick < 200) return;
+        floodVersion = placement.version();
+        floodTick = tick;
+        FLOOD.clear();
+        int sx = placement.sizeX(), sy = placement.sizeY(), sz = placement.sizeZ();
+        if ((long) (sx + 2) * (sy + 2) * (sz + 2) > 4_000_000L) return;
+        BlockPos o = placement.origin();
+        java.util.ArrayDeque<BlockPos> q = new java.util.ArrayDeque<>();
+        BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+        for (int y = -1; y <= sy; y++)
+            for (int z = -1; z <= sz; z++)
+                for (int x = -1; x <= sx; x++) {
+                    boolean in = x >= 0 && y >= 0 && z >= 0 && x < sx && y < sy && z < sz;
+                    m.set(o.getX() + x, o.getY() + y, o.getZ() + z);
+                    if (in && placement.targetAt(m) != null) continue;
+                    if (!level.isLoaded(m) || level.getFluidState(m).isEmpty()) continue;
+                    BlockPos b = m.immutable();
+                    if (in) FLOOD.add(b.asLong());
+                    q.add(b);
+                }
+        net.minecraft.core.Direction[] dirs = {net.minecraft.core.Direction.NORTH, net.minecraft.core.Direction.SOUTH,
+                net.minecraft.core.Direction.EAST, net.minecraft.core.Direction.WEST, net.minecraft.core.Direction.DOWN};
+        while (!q.isEmpty()) {
+            BlockPos c = q.poll();
+            for (var d : dirs) {
+                BlockPos n = c.relative(d);
+                if (!placement.contains(n) || FLOOD.contains(n.asLong())) continue;
+                BlockState t = placement.targetAt(n);
+                if (t != null && StateMatcher.watertight(t)) continue;
+                FLOOD.add(n.asLong());
+                q.add(n);
+            }
+        }
+    }
+
+    /** 这一格的水值得抽：建好后外面的水灌不进来 */
+    private static boolean drainable(BlockPos b) {
+        return !FLOOD.contains(b.asLong());
+    }
+
+    /** 周围六格都没有液体（抽水填的方块可以挖回来了） */
+    private static boolean dryAround(ClientLevel level, BlockPos b) {
+        for (var d : net.minecraft.core.Direction.values()) {
+            if (!level.getFluidState(b.relative(d)).isEmpty()) return false;
+        }
+        return true;
+    }
+
+    private static Item firstScaffoldItem() {
+        var it = ScaffoldItems.items().iterator();
+        return it.hasNext() ? it.next() : net.minecraft.world.item.Items.DIRT;
+    }
+
+    private static boolean hasTool(LocalPlayer p, java.util.function.Predicate<ItemStack> tool) {
+        for (int i = 0; i < 36; i++) {
+            if (tool.test(p.getInventory().getItem(i))) return true;
+        }
+        return false;
+    }
+
+    /** 蓝图里还有要倒的水：手上的水桶留着用，别倒掉 */
+    private static boolean needsWaterBuckets() {
+        Scanner.Snapshot s = SCANNER.snapshot();
+        return s != null && s.fluids.stream().anyMatch(b -> !fluidGivenUp(b)
+                && !placement.targetAt(b).is(net.minecraft.world.level.block.Blocks.LAVA));
+    }
+
+    /** 抽水：用垫脚方块把液体源头填掉，从上往下（填好的上层能当落脚的地方） */
+    private static boolean doDrain(LocalPlayer p, ClientLevel level, List<BlockPos> drains) {
+        if (drains.isEmpty()) return false;
+        Item sc = ScaffoldItems.pick(p, placement, SCANNER.snapshot());
+        if (sc == null) {
+            MISSING.merge(firstScaffoldItem(), drains.size(), (a, b) -> a);
+            return false;
+        }
+        Vec3 eye = p.getEyePosition();
+        drains.sort(Comparator.<BlockPos>comparingInt(b -> -b.getY()).thenComparingDouble(b -> Geometry.distSq(b, eye.x, eye.y, eye.z)));
+        BlockState filler = ((net.minecraft.world.item.BlockItem) sc).getBlock().defaultBlockState();
+        int sims = 0;
+        for (BlockPos b : drains) {
+            if (sims++ > 24) break;
+            Placer.PlaceAction a = Placer.planAny(MC, b, sc);
+            if (a == null) continue;
+            if (wouldSealIn(p, level, b, filler)) continue;
+            if (!InventoryHelper.selectItem(MC, sc)) return false;
+            Placer.Result res = Placer.execute(MC, a);
+            if (res == Placer.Result.DEFERRED) {
+                activity = Lang.t("act.turn", b.toShortString());
+                return true;
+            }
+            if (res == Placer.Result.PLACED) {
+                SCAFFOLD.add(b.immutable());
+                DRAIN_FILL.add(b.immutable());
+                PENDING.put(b, tick + 8);
+                countAttempt(b);
+                if (debug) AutoBuilder.LOG.info("[AB] 抽水 {}", b.toShortString());
+                activity = Lang.t("act.drain", b.toShortString());
+                return true;
+            }
+            PENDING.put(b, tick + 20);
+        }
+        return false;
+    }
+
+    /** 放进水里自动泡了水的方块：用空桶舀掉。没空桶但有多的水桶，就先倒回外面的水里腾出空桶 */
+    private static boolean doUnwaterlog(LocalPlayer p, ClientLevel level, Vec3 eye, List<BlockPos> wet) {
+        if (wet.isEmpty() || !p.onGround()) return false;
+        Item bucket = net.minecraft.world.item.Items.BUCKET, water = net.minecraft.world.item.Items.WATER_BUCKET;
+        if (InventoryHelper.count(p, bucket) == 0) {
+            if (InventoryHelper.count(p, water) == 0 || needsWaterBuckets()) return false;
+            BlockPos dump = nearestWaterSource(level, BlockPos.containing(eye), 5);
+            if (dump == null) return false;
+            FluidPlacer.FluidAction a = FluidPlacer.plan(MC, eye, dump, FluidPlacer.Kind.SOURCE, water);
+            if (a == null || !InventoryHelper.selectItem(MC, water)) return false;
+            Placer.Result res = FluidPlacer.execute(MC, a);
+            if (res == Placer.Result.FAILED) return false;
+            activity = Lang.t("act.dump_water");
+            return true;
+        }
+        wet.sort(Comparator.comparingDouble(b -> Geometry.distSq(b, eye.x, eye.y, eye.z)));
+        for (BlockPos b : wet) {
+            FluidPlacer.FluidAction a = FluidPlacer.plan(MC, eye, b, FluidPlacer.Kind.REFILL, bucket);
+            if (a == null) continue;
+            if (!InventoryHelper.selectItem(MC, bucket)) return false;
+            Placer.Result res = FluidPlacer.execute(MC, a);
+            if (res == Placer.Result.DEFERRED) {
+                activity = Lang.t("act.fluid_wait");
+                return true;
+            }
+            PENDING.put(b, tick + (res == Placer.Result.PLACED ? 10 : 30));
+            if (res == Placer.Result.PLACED) {
+                countAttempt(b);
+                if (debug) AutoBuilder.LOG.info("[AB] 舀水 {}", b.toShortString());
+                activity = Lang.t("act.unwaterlog", b.toShortString());
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean userMoving() {
         var o = MC.options;
         return MC.screen == null && (o.keyUp.isDown() || o.keyDown.isDown() || o.keyLeft.isDown() || o.keyRight.isDown()
@@ -326,12 +620,15 @@ public final class BuildController {
         double reach = reach();
         int r = (int) Math.ceil(reach) + 1;
         BlockPos c = BlockPos.containing(eye);
-        boolean breakWrong = ABConfig.BREAK_WRONG.get();
-        boolean clearAir = ABConfig.CLEAR_AIR.get();
+        boolean breakWrong = breakWrong();
+        boolean clearAir = clearAir();
         List<BlockPos> breaks = new ArrayList<>();
         List<BlockPos> places = new ArrayList<>();
         List<BlockPos> interacts = new ArrayList<>();
         List<BlockPos> fluids = new ArrayList<>();
+        List<BlockPos> drains = new ArrayList<>();
+        List<BlockPos> wet = new ArrayList<>();
+        List<BlockPos> recycle = new ArrayList<>();
         BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
         // 拆脚手架必须从上往下：只拆当前最高一层，为了够高处临时垫的柱子要等上面拆完
         int topY = phase == Phase.CLEANUP ? scaffoldTopY(level) : Integer.MAX_VALUE;
@@ -345,6 +642,15 @@ public final class BuildController {
                     BlockState world = level.getBlockState(m);
                     if (SCAFFOLD.contains(m)) {
                         if (phase == Phase.CLEANUP && ScaffoldItems.isScaffold(world) && m.getY() >= topY && !reserved.contains(m)) breaks.add(m.immutable());
+                        else if (DRAIN_FILL.contains(m)) {
+                            if (!ScaffoldItems.isScaffold(world)) {
+                                // 抽水填的方块已经没了（挖回来了或者被拒）
+                                DRAIN_FILL.remove(m);
+                                SCAFFOLD.remove(m);
+                            } else if (phase == Phase.BUILD && dryAround(level, m)) {
+                                recycle.add(m.immutable());
+                            }
+                        }
                         continue;
                     }
                     BlockState target = placement.targetAt(m);
@@ -358,8 +664,16 @@ public final class BuildController {
                         if (fluidReady(m)) fluids.add(m.immutable());
                         continue;
                     }
-                    if (st == StateMatcher.Status.INTERACT) {
+                    if (st == StateMatcher.Status.INTERACT || st == StateMatcher.Status.TILL) {
                         interacts.add(m.immutable());
+                        continue;
+                    }
+                    if (st == StateMatcher.Status.DRAIN) {
+                        if (drainable(m)) drains.add(m.immutable());
+                        continue;
+                    }
+                    if (st == StateMatcher.Status.UNWATERLOG) {
+                        wet.add(m.immutable());
                         continue;
                     }
                     // 液体还没倒的那层以上先不建；同一段内按红石分层
@@ -382,11 +696,39 @@ public final class BuildController {
             return true;
         }
         for (BlockPos b : interacts) {
+            BlockState t = placement.targetAt(b);
+            var tool = StateMatcher.toolFor(t);
+            if (tool != null) {
+                // 耕地/土径：先放的泥土，用锄头/铲子右键加工；上面要是空气
+                if (!hasTool(p, tool)) {
+                    MISSING.merge(StateMatcher.toolItem(t), 1, (a, bb) -> a);
+                    continue;
+                }
+                BlockPos up = b.above();
+                BlockState us = level.getBlockState(up);
+                if (!us.isAir()) {
+                    if (StateMatcher.isSoft(us) && StateMatcher.breakable(us) && us.getFluidState().isEmpty()
+                            && Geometry.distSqToBlock(eye.x, eye.y, eye.z, up) <= reach * reach) {
+                        BREAKER.start(up, true);
+                        BREAKER.tick(MC, reach);
+                        activity = Lang.t("act.break", up.toShortString());
+                        return true;
+                    }
+                    continue;
+                }
+                if (!countAttempt(b)) continue;
+                Placer.useTool(MC, b, tool);
+                PENDING.put(b, tick + 6);
+                activity = Lang.t("act.till", b.toShortString());
+                return true;
+            }
             Placer.interact(MC, b);
             PENDING.put(b, tick + 6);
             activity = Lang.t("act.interact", b.toShortString());
             return true;
         }
+        if (doDrain(p, level, drains)) return true;
+        if (doUnwaterlog(p, level, eye, wet)) return true;
         // 就绪的液体要趁上面还空着赶紧倒
         if (doFluidWork(p, level, eye, fluids)) return true;
         places.sort(Comparator.<BlockPos>comparingInt(BlockPos::getY).thenComparingDouble(b -> Geometry.distSq(b, eye.x, eye.y, eye.z)));
@@ -397,13 +739,14 @@ public final class BuildController {
             if (sims > 48) break;
             BlockState target = placement.targetAt(b);
             BlockState world = level.getBlockState(b);
-            Item item = StateMatcher.itemFor(target);
+            Item item = Substitutes.pick(p, target);
             if (item == null) continue;
             if (InventoryHelper.count(p, item) == 0) {
                 MISSING.merge(item, 1, (a, bb) -> a);
                 continue;
             }
             sims++;
+            target = Substitutes.placeTarget(target, item);
             Placer.PlaceAction a = Placer.plan(MC, b, target, world, item);
             if (a == null) continue;
             if (wouldSealIn(p, level, b, target)) continue;
@@ -425,6 +768,16 @@ public final class BuildController {
             }
         }
         if (done > 0) return true;
+        // 身边没别的活了：抽水填的方块周围已经干了就挖回来（省方块，完工时也少拆一些）
+        recycle.sort(Comparator.<BlockPos>comparingInt(b -> -b.getY()).thenComparingDouble(b -> Geometry.distSq(b, eye.x, eye.y, eye.z)));
+        for (BlockPos b : recycle) {
+            if (!safeToBreak(p, level, b) || supportsPlayer(p, b)) continue;
+            if (!countAttempt(b)) continue;
+            BREAKER.start(b);
+            BREAKER.tick(MC, reach);
+            activity = Lang.t("act.drain_back", b.toShortString());
+            return true;
+        }
         return false;
     }
 
@@ -494,7 +847,7 @@ public final class BuildController {
         if (wt == null || wt.isAir()) return true;
         StateMatcher.Status st = StateMatcher.classify(wt, level.getBlockState(w), true, false);
         return st == StateMatcher.Status.OK || st == StateMatcher.Status.UNSUPPORTED || st == StateMatcher.Status.IGNORE
-                || st == StateMatcher.Status.WATERLOG;
+                || st == StateMatcher.Status.WATERLOG || st == StateMatcher.Status.UNWATERLOG || st == StateMatcher.Status.DRAIN;
     }
 
     private static boolean fluidGivenUp(BlockPos b) {
@@ -522,7 +875,7 @@ public final class BuildController {
         for (BlockPos b : s.place) {
             if (BLACKLIST.containsKey(b)) continue;
             BlockState t = placement.targetAt(b);
-            Item it = StateMatcher.itemFor(t);
+            Item it = Substitutes.pick(p, t);
             if (it == null || InventoryHelper.count(p, it) == 0) continue;
             sy = Math.min(sy, b.getY());
         }
@@ -664,7 +1017,10 @@ public final class BuildController {
     /** 挖了不会出事：旁边没有岩浆，脚下的方块挖了不会摔太高 */
     private static boolean safeToBreak(LocalPlayer p, ClientLevel level, BlockPos b) {
         for (var d : net.minecraft.core.Direction.values()) {
-            if (level.getFluidState(b.relative(d)).is(net.minecraft.tags.FluidTags.LAVA)) return false;
+            var f = level.getFluidState(b.relative(d));
+            if (f.is(net.minecraft.tags.FluidTags.LAVA)) return false;
+            // 砍树/挖矿：挖开会把水放进来的不挖
+            if (placement != null && placement.temporary && !f.isEmpty() && d != net.minecraft.core.Direction.DOWN) return false;
         }
         AABB box = p.getBoundingBox();
         AABB below = new AABB(box.minX, box.minY - 0.2, box.minZ, box.maxX, box.minY, box.maxZ);
@@ -695,8 +1051,8 @@ public final class BuildController {
         if (tryPickup(p, level, s)) return;
         Vec3 pos = p.position();
         List<Target> cands = new ArrayList<>();
-        boolean breakWrong = ABConfig.BREAK_WRONG.get();
-        boolean clearAir = ABConfig.CLEAR_AIR.get();
+        boolean breakWrong = breakWrong();
+        boolean clearAir = clearAir();
         MISSING.clear();
         if (phase == Phase.BUILD) {
             List<BlockPos> br = new ArrayList<>();
@@ -706,6 +1062,8 @@ public final class BuildController {
             }
             br.sort(Comparator.<BlockPos>comparingInt(b -> -b.getY()).thenComparingDouble(b -> b.distToCenterSqr(pos)));
             for (int i = 0; i < Math.min(br.size(), 6); i++) cands.add(new Target(br.get(i), Kind.BREAK));
+            // 抽水：建筑里面的水源先用方块填掉（从上往下），场地干了再盖
+            collectDrains(p, level, s, cands, pos);
             // 就绪的液体优先（上面还空着、看得见的时候倒）
             collectFluids(p, level, s, cands, pos);
             // 按层找目标：低层（普通方块）做完了才轮到红石、侦测器、TNT
@@ -716,11 +1074,31 @@ public final class BuildController {
                         if (BLACKLIST.containsKey(b)) continue;
                         BlockState tg = placement.targetAt(b);
                         if (StateMatcher.tier(tg) != t) continue;
+                        var tool = StateMatcher.toolFor(tg);
+                        if (tool != null && !hasTool(p, tool)) {
+                            MISSING.merge(StateMatcher.toolItem(tg), 1, (a, bb) -> a);
+                            continue;
+                        }
                         cands.add(new Target(b, Kind.INTERACT));
                         if (cands.size() >= 4) break;
                     }
                 }
                 if (!cands.isEmpty()) allowedTier = t;
+            }
+            // 最后：泡了水的方块用空桶舀掉（没桶就算了，完工时提醒）
+            if (cands.isEmpty() && !s.unwaterlog.isEmpty()) {
+                boolean canScoop = InventoryHelper.count(p, net.minecraft.world.item.Items.BUCKET) > 0
+                        || InventoryHelper.count(p, net.minecraft.world.item.Items.WATER_BUCKET) > 0 && !needsWaterBuckets();
+                if (canScoop) {
+                    List<BlockPos> wl = new ArrayList<>(s.unwaterlog);
+                    wl.sort(Comparator.comparingDouble(b -> b.distToCenterSqr(pos)));
+                    for (BlockPos b : wl) {
+                        if (BLACKLIST.containsKey(b)) continue;
+                        if (StateMatcher.classify(placement.targetAt(b), level.getBlockState(b), breakWrong, clearAir) != StateMatcher.Status.UNWATERLOG) continue;
+                        cands.add(new Target(b, Kind.FLUID, net.minecraft.world.item.Items.BUCKET, FluidPlacer.Kind.REFILL));
+                        if (cands.size() >= 4) break;
+                    }
+                }
             }
             if (cands.isEmpty()) {
                 noTargetTicks++;
@@ -733,12 +1111,16 @@ public final class BuildController {
                         activity = Restocker.describe();
                         return;
                     }
-                    pause(Lang.t(SupplyManager.any() ? "reason.missing_supply" : "reason.missing", missingText(8)));
+                    pause(Lang.t(SupplyManager.any() || ABConfig.SEARCH_CONTAINERS.get() ? "reason.missing_supply" : "reason.missing", missingText(8)));
                     return;
                 }
                 // 只等还有活要干的黑名单位置；捡不到的掉落物也在黑名单里，但不该挡住收尾
                 boolean blockedWork = BLACKLIST.keySet().stream().anyMatch(b -> s.place.contains(b) || s.breaks.contains(b)
-                        || s.interact.contains(b) || s.fluids.contains(b));
+                        || s.interact.contains(b) || s.fluids.contains(b) || s.drain.contains(b) && drainable(b));
+                if (blockedWork && placement.temporary && noTargetTicks > 60) {
+                    finishBuild(s);
+                    return;
+                }
                 if (blockedWork) {
                     activity = Lang.t("act.unreachable");
                     if (noTargetTicks > 25 + 400) {
@@ -752,7 +1134,7 @@ public final class BuildController {
                     noTargetTicks = 0;
                     return;
                 }
-                if (!s.place.isEmpty() || !s.fluids.isEmpty()) {
+                if (!s.place.isEmpty() || !s.fluids.isEmpty() || s.drain.stream().anyMatch(BuildController::drainable)) {
                     activity = Lang.t("act.stuck_place");
                     if (noTargetTicks > 200) finishBuild(s);
                     return;
@@ -816,8 +1198,8 @@ public final class BuildController {
     }
 
     private static void collectPlaces(LocalPlayer p, ClientLevel level, Scanner.Snapshot s, int tier, List<Target> cands, Vec3 pos) {
-        boolean breakWrong = ABConfig.BREAK_WRONG.get();
-        boolean clearAir = ABConfig.CLEAR_AIR.get();
+        boolean breakWrong = breakWrong();
+        boolean clearAir = clearAir();
         List<BlockPos> pl = new ArrayList<>();
         int minY = Integer.MAX_VALUE;
         for (BlockPos b : s.place) {
@@ -826,7 +1208,7 @@ public final class BuildController {
             if (StateMatcher.tier(t) != tier || b.getY() > fluidBarrierY || !observerReady(level, b, t)) continue;
             BlockState w = level.getBlockState(b);
             if (StateMatcher.classify(t, w, breakWrong, clearAir) != StateMatcher.Status.PLACE) continue;
-            Item it = StateMatcher.itemFor(t);
+            Item it = Substitutes.pick(p, t);
             if (it == null) continue;
             if (InventoryHelper.count(p, it) == 0) {
                 MISSING.merge(it, StateMatcher.itemsNeeded(t, w), Integer::sum);
@@ -843,7 +1225,8 @@ public final class BuildController {
         for (BlockPos b : low) {
             if (checked++ > 40 || cands.size() >= 6) break;
             BlockState t = placement.targetAt(b);
-            if (Placer.plan(MC, b, t, level.getBlockState(b), StateMatcher.itemFor(t)) == null) continue;
+            Item it = Substitutes.pick(p, t);
+            if (Placer.plan(MC, b, Substitutes.placeTarget(t, it), level.getBlockState(b), it) == null) continue;
             cands.add(new Target(b, Kind.PLACE));
         }
         // 有封口方块时优先处理：先走出封闭区
@@ -855,15 +1238,34 @@ public final class BuildController {
             for (BlockPos b : pl) {
                 if (checked++ > 60 || cands.size() >= 6) break;
                 BlockState t = placement.targetAt(b);
-                if (Placer.plan(MC, b, t, level.getBlockState(b), StateMatcher.itemFor(t)) == null) continue;
+                Item it = Substitutes.pick(p, t);
+                if (Placer.plan(MC, b, Substitutes.placeTarget(t, it), level.getBlockState(b), it) == null) continue;
                 cands.add(new Target(b, Kind.PLACE));
             }
         }
     }
 
+    private static void collectDrains(LocalPlayer p, ClientLevel level, Scanner.Snapshot s, List<Target> cands, Vec3 pos) {
+        if (cands.size() >= 6 || s.drain.isEmpty()) return;
+        boolean breakWrong = breakWrong();
+        boolean clearAir = clearAir();
+        List<BlockPos> dr = new ArrayList<>();
+        for (BlockPos b : s.drain) {
+            if (BLACKLIST.containsKey(b) || !drainable(b)) continue;
+            if (StateMatcher.classify(placement.targetAt(b), level.getBlockState(b), breakWrong, clearAir) == StateMatcher.Status.DRAIN) dr.add(b);
+        }
+        if (dr.isEmpty()) return;
+        if (ScaffoldItems.available(p, placement, s) <= 0) {
+            MISSING.merge(firstScaffoldItem(), dr.size(), Integer::sum);
+            return;
+        }
+        dr.sort(Comparator.<BlockPos>comparingInt(b -> -b.getY()).thenComparingDouble(b -> b.distToCenterSqr(pos)));
+        for (int i = 0; i < dr.size() && cands.size() < 6; i++) cands.add(new Target(dr.get(i), Kind.PLACE));
+    }
+
     private static void collectFluids(LocalPlayer p, ClientLevel level, Scanner.Snapshot s, List<Target> cands, Vec3 pos) {
-        boolean breakWrong = ABConfig.BREAK_WRONG.get();
-        boolean clearAir = ABConfig.CLEAR_AIR.get();
+        boolean breakWrong = breakWrong();
+        boolean clearAir = clearAir();
         boolean needRefill = false;
         List<BlockPos> list = new ArrayList<>(s.fluids);
         list.sort(Comparator.<BlockPos>comparingInt(b -> placement.targetAt(b).is(net.minecraft.world.level.block.Blocks.LAVA) ? 0 : 1)
@@ -901,7 +1303,10 @@ public final class BuildController {
             if (!e.isAlive() || e.hasPickUpDelay() && e.tickCount < 30) return false;
             if (BLACKLIST.containsKey(e.blockPosition())) return false;
             Item it = e.getItem().getItem();
-            return s.need.containsKey(it) || ScaffoldItems.items().contains(it);
+            // 蓝图要用的、垫脚的，还有掉在地上的工具和桶（背包满时掉出来的也捡回来）
+            if (placement.temporary) return Gather.wanted(p, it);
+            return s.need.containsKey(it) || ScaffoldItems.items().contains(it)
+                    || it instanceof net.minecraft.world.item.DiggerItem || it instanceof net.minecraft.world.item.BucketItem;
         });
         if (items.isEmpty()) return false;
         if (p.getInventory().getFreeSlot() < 0) {
@@ -952,10 +1357,13 @@ public final class BuildController {
         if (!s.wrong.isEmpty()) extra += Lang.t("msg.extra_wrong", s.wrong.size());
         if (!s.place.isEmpty()) extra += Lang.t("msg.extra_unfinished", s.place.size());
         if (!s.fluids.isEmpty()) extra += Lang.t("msg.extra_fluid", s.fluids.size());
+        long dry = s.drain.stream().filter(BuildController::drainable).count();
+        if (dry > 0) extra += Lang.t("msg.extra_drain", dry);
+        if (!s.unwaterlog.isEmpty()) extra += Lang.t("msg.extra_wet", s.unwaterlog.size());
         if (ABConfig.REMOVE_SCAFFOLD.get() && !SCAFFOLD.isEmpty()) {
             phase = Phase.CLEANUP;
             BLACKLIST.clear();
-            msg(Lang.t("msg.main_done", extra, SCAFFOLD.size()), ChatFormatting.AQUA);
+            if (!quiet) msg(Lang.t("msg.main_done", extra, SCAFFOLD.size()), ChatFormatting.AQUA);
             return;
         }
         finish(Lang.t("msg.done_extra", extra));
@@ -1019,12 +1427,7 @@ public final class BuildController {
     }
 
     private static List<PathFinder.Step> runFinder(LocalPlayer p, ClientLevel level, PathFinder.Goal goal) {
-        PathFinder.Ctx ctx = new PathFinder.Ctx(level, placement, SCAFFOLD, ABConfig.ALLOW_SCAFFOLD.get(),
-                ABConfig.ALLOW_DIG.get(), ABConfig.MAX_FALL.get(), ScaffoldItems.available(p, placement, SCANNER.snapshot()),
-                st -> {
-                    Item it = StateMatcher.itemFor(st);
-                    return it != null && InventoryHelper.count(p, it) > 0;
-                });
+        PathFinder.Ctx ctx = newCtx(p, level);
         BlockPos start = BlockPos.containing(p.getX(), p.getY() + 0.01, p.getZ());
         double stand = PathFinder.stand(ctx, start.getX(), start.getY(), start.getZ());
         if (Double.isNaN(stand)) {
@@ -1056,9 +1459,9 @@ public final class BuildController {
         BlockState target = placement == null ? null : placement.targetAt(pos);
         BlockState world = MC.level.getBlockState(pos);
         if (target != null && !target.isAir()) {
-            Item it = StateMatcher.itemFor(target);
+            Item it = Substitutes.pick(p, target);
             if (it != null && InventoryHelper.count(p, it) > 0) {
-                Placer.PlaceAction a = Placer.plan(MC, pos, target, world, it);
+                Placer.PlaceAction a = Placer.plan(MC, pos, Substitutes.placeTarget(target, it), world, it);
                 if (a != null && InventoryHelper.selectItem(MC, it)) {
                     Placer.Result res = Placer.execute(MC, a);
                     if (res == Placer.Result.PLACED) PENDING.put(pos, tick + 8);

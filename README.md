@@ -17,11 +17,15 @@ A client-side NeoForge mod for Minecraft 1.21.1 that makes **your own player** b
 - **Fixes the world**: breaks wrongly placed blocks and blocks where the schematic has air; flips levers/repeaters/comparators/note blocks to the right state.
 - **Redstone machines and fluids**: places water/lava sources with buckets in a safe order (fluids only after their layer is enclosed), waterlogs blocks, places observers only after the block they watch is final, refills water buckets from infinite sources.
 - **Scaffolding**: pillars and bridges with cheap blocks (dirt, cobblestone…) and removes them top-down when finished. Avoids sealing itself inside the building.
-- **Supply chests**: register chests / barrels / shulker boxes; when materials run out it walks over, deposits junk and takes what it needs.
+- **Supply chests**: register chests / barrels / shulker boxes; when materials run out it walks over, deposits junk and takes what it needs. Unregistered containers nearby are searched too (it only takes from those).
 - **Resume**: progress is saved per world and dimension; after disconnecting or restarting, press N to continue.
-- **Save buildings**: select two corners and save any build as a `.nbt` schematic.
-- **Safety**: auto-eats, stops on low health, escapes lava, pauses as soon as you press a movement key.
-- **Preview**: translucent ghost blocks and outlines for blocks to break.
+- **Save buildings**: select two corners (or click them with a stick) and save any build as a `.nbt` schematic. Lake water around it is left out automatically.
+- **Water**: drains water inside the building (fills it and takes the blocks back), scoops water out of blocks that got waterlogged, bridges over water, never works under water.
+- **Grass, farmland, paths**: built from dirt; farmland is tilled with a hoe and paths flattened with a shovel.
+- **Safety**: auto-eats, stops to regenerate on low health and then continues, surfaces when under water, escapes lava, pauses as soon as you press a movement key.
+- **Preview**: translucent ghost blocks and outlines for blocks to break. Press H to hide it while it keeps building.
+- **Material substitution**: uses another wood type or colour of the same block when one runs out (configurable).
+- **Gathering**: `/ab chop` chops nearby natural trees and replants; `/ab mine` branch-mines in the direction you face and mines the ores the tunnels expose.
 
 ## Usage
 
@@ -35,7 +39,9 @@ Type `/ab help` in chat for the full command list (hover over a command for deta
 | --- | --- |
 | B | Open main screen |
 | N | Start / pause |
+| H | Hide / show preview (keeps building) |
 | `[` / `]` | Selection corner 1 / 2 (block under crosshair) |
+| Stick: left / right click | Selection corner 1 / 2 (up to 128 blocks away) |
 
 Settings: *Settings…* button on the main screen, `/ab config`, or Mods → AutoBuilder → Config.
 
@@ -85,17 +91,23 @@ Minecraft 1.21.1 NeoForge **纯客户端** mod：在生存模式下让玩家自�
 - **修正世界**：挖掉放错的方块和蓝图里应为空气的方块；拉杆、中继器、比较器、音符盒自动调到蓝图的状态。
 - **红石机器与液体**：用桶放水源和岩浆源，等液体所在层围好后再倒；含水方块；侦测器等它盯着的方块就位再放；水桶空了自动去无限水打水。
 - **脚手架**：用泥土、圆石等便宜方块垫柱子、搭桥，完工后从上往下拆掉；不会把自己封在建筑里。
-- **材料箱**：登记箱子、木桶或潜影盒，缺料时自动走过去存杂物、取材料。
+- **材料箱**：登记箱子、木桶或潜影盒，缺料时自动走过去存杂物、取材料；没登记的附近箱子也会去翻（只拿不放）。
+- **同类材料替换**：缺某种木头就用别的木头的同款，缺某种颜色（床、羊毛、玻璃、混凝土……）就用别的颜色，设置里可以关。
+- **砍树挖矿**：`/ab chop` 砍附近的天然树并补种；`/ab mine` 往面朝方向挖支巷，挖巷道里露出来的矿。
 - **断点续建**：进度按世界和维度保存，掉线或重启后按 N 接着建。
-- **保存建筑**：选两个角就能把任何建筑存成 `.nbt` 蓝图。
-- **安全**：自动吃东西、低血量停止、掉进岩浆自救、一按移动键就暂停。
-- **预览**：半透明的待放方块，待挖方块有描边。
+- **保存建筑**：选两个角（或者拿木棍左键/右键点）就能把任何建筑存成 `.nbt` 蓝图，周围的湖水自动不存。
+- **水**：建筑里面的水自动抽干（填方块再收回），泡了水的方块用空桶舀掉，能在水面上搭桥，不会在水里干活。
+- **草方块、耕地、土径**：都用泥土放，耕地用锄头锄、土径用铲子铲。
+- **安全**：自动吃东西；血量低先停下回血，回好了自动继续；头没进水里先浮上来；掉进岩浆自救；一按移动键就暂停。
+- **预览**：半透明的待放方块，待挖方块有描边。按 H 可以隐藏投影，照常干活。
 
 ### 用法
 
 1. 把蓝图放进 `.minecraft/autobuild/`（开了版本隔离就放在 `versions/<版本>/autobuild/`）。
 2. 按 **B** 打开主界面，选蓝图，点「加载到面前」，用旋转、镜像、移动把预览摆到想要的位置。
 3. 材料放进背包（或登记材料箱），按 **N** 开始。再按 N 或按任意移动键暂停。
+
+快捷键：**B** 主界面，**N** 开始/暂停，**H** 隐藏/显示投影，**[ ]** 选区角；手拿木棍左键/右键也能设选区角。
 
 聊天栏输入 `/ab help` 查看全部指令（鼠标悬停看说明，点击填进聊天栏）。设置：主界面右上角「设置…」、`/ab config`，或 模组 → AutoBuilder → 配置。
 

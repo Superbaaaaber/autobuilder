@@ -22,6 +22,10 @@ public final class Scanner {
         public final List<BlockPos> wrong = new ArrayList<>();
         /** 要倒液体的位置（液体源 + 含水方块） */
         public final List<BlockPos> fluids = new ArrayList<>();
+        /** 抽水：蓝图是空气、世界里是液体源头的位置（用方块填掉） */
+        public final List<BlockPos> drain = new ArrayList<>();
+        /** 泡了水的方块（要用空桶舀掉） */
+        public final List<BlockPos> unwaterlog = new ArrayList<>();
         public final Map<Item, Integer> need = new HashMap<>();
         public int total; // 需要关心的格子数
         public int ok;
@@ -65,8 +69,8 @@ public final class Scanner {
             current = null;
             cursor = 0;
         }
-        boolean breakWrong = ABConfig.BREAK_WRONG.get();
-        boolean clearAir = ABConfig.CLEAR_AIR.get();
+        boolean breakWrong = ABConfig.BREAK_WRONG.get() || pl.temporary;
+        boolean clearAir = ABConfig.CLEAR_AIR.get() || pl.temporary;
         int sx = pl.sizeX(), sy = pl.sizeY(), sz = pl.sizeZ();
         int volume = sx * sy * sz;
         BlockPos o = pl.origin();
@@ -89,7 +93,7 @@ public final class Scanner {
             BlockState world = level.getBlockState(m);
             StateMatcher.Status st = StateMatcher.classify(target, world, breakWrong, clearAir);
             if (st == StateMatcher.Status.IGNORE) continue;
-            if (!target.isAir() || st != StateMatcher.Status.OK) s.total++;
+            if (!target.isAir() || st != StateMatcher.Status.OK && st != StateMatcher.Status.DRAIN) s.total++; // 抽水不算进度
             switch (st) {
                 case OK, WAIT -> {
                     if (!target.isAir()) s.ok += st == StateMatcher.Status.OK ? 1 : 0;
@@ -104,7 +108,9 @@ public final class Scanner {
                     // 自己搭的脚手架不算“待挖”，完工后统一拆
                     if (!skipBreak.contains(m)) s.breaks.add(m.immutable());
                 }
-                case INTERACT -> s.interact.add(m.immutable());
+                case INTERACT, TILL -> s.interact.add(m.immutable());
+                case DRAIN -> s.drain.add(m.immutable());
+                case UNWATERLOG -> s.unwaterlog.add(m.immutable());
                 case FLUID -> {
                     s.fluids.add(m.immutable());
                     s.need.merge(StateMatcher.bucketFor(target), 1, Integer::sum);

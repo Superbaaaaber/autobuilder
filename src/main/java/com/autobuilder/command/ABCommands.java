@@ -46,7 +46,7 @@ public final class ABCommands {
                 .executes(c -> help())
                 // /ab help [页码]：显示所有指令和中文说明（共 2 页）
                 .then(Commands.literal("help").executes(c -> help())
-                        .then(Commands.argument("page", IntegerArgumentType.integer(1, 2))
+                        .then(Commands.argument("page", IntegerArgumentType.integer(1, 3))
                                 .executes(c -> help(IntegerArgumentType.getInteger(c, "page")))))
 
                 // ===== 蓝图 =====
@@ -104,6 +104,20 @@ public final class ABCommands {
                 // /ab materials：材料清单，需要多少、背包里有多少、还缺多少
                 .then(Commands.literal("materials").executes(c -> materials()))
 
+                // ===== 砍树挖矿 =====
+                // /ab chop [半径]：以站的位置为中心砍附近的天然树
+                .then(Commands.literal("chop")
+                        .executes(c -> chop(24))
+                        .then(Commands.argument("radius", IntegerArgumentType.integer(4, 64))
+                                .executes(c -> chop(IntegerArgumentType.getInteger(c, "radius")))))
+                // /ab mine [主巷长度] [支巷长度]：在脚下高度往面朝方向挖支巷，挖露出来的矿
+                .then(Commands.literal("mine")
+                        .executes(c -> mine(48, 12))
+                        .then(Commands.argument("length", IntegerArgumentType.integer(4, 256))
+                                .executes(c -> mine(IntegerArgumentType.getInteger(c, "length"), 12))
+                                .then(Commands.argument("branch", IntegerArgumentType.integer(0, 64))
+                                        .executes(c -> mine(IntegerArgumentType.getInteger(c, "length"), IntegerArgumentType.getInteger(c, "branch"))))))
+
                 // ===== 保存建筑 =====
                 // /ab pos1 [坐标]、/ab pos2 [坐标]：设置选区的两个角，不写坐标就用准星对着的方块（没对着方块就用脚下）
                 .then(Commands.literal("pos1")
@@ -155,7 +169,17 @@ public final class ABCommands {
                 .then(Commands.literal("config").executes(c -> {
                     AutoBuilder.openConfig(null);
                     return 1;
-                }));
+                }))
+                // /ab hide：隐藏/显示投影（隐藏时照常建造），同 H 键
+                .then(Commands.literal("hide").executes(c -> {
+                    com.autobuilder.ClientEvents.togglePreview();
+                    return 1;
+                }))
+                // /ab wand [on|off]：选区木棍说明，或者开关
+                .then(Commands.literal("wand")
+                        .executes(c -> wand(null))
+                        .then(Commands.literal("on").executes(c -> wand(true)))
+                        .then(Commands.literal("off").executes(c -> wand(false))));
         var node = d.register(root);
         // /ab 是 /autobuild 的简写
         d.register(Commands.literal("ab").redirect(node).executes(c -> help()));
@@ -169,7 +193,7 @@ public final class ABCommands {
      */
     private record Help(String key, String fill) {}
 
-    /** 两页帮助，每页不超过聊天栏展开时能看到的 20 行；字符串是分类（help.sec.xxx） */
+    /** 三页帮助，每页不超过聊天栏展开时能看到的 20 行；字符串是分类（help.sec.xxx） */
     private static final List<List<Object>> PAGES = List.of(List.of(
             "blueprint",
             new Help("list", "/ab list"),
@@ -189,6 +213,7 @@ public final class ABCommands {
     ), List.of(
             "save",
             new Help("pos", "/ab pos1"),
+            new Help("wand", "/ab wand"),
             new Help("save", "/ab save "),
             new Help("savesolid", "/ab savesolid "),
             new Help("saveregion", "/ab saveregion "),
@@ -196,10 +221,15 @@ public final class ABCommands {
             new Help("supplyadd", "/ab supply add"),
             new Help("supplyremove", "/ab supply remove"),
             new Help("supplylist", "/ab supply list"),
-            new Help("supplyclear", "/ab supply clear"),
+            new Help("supplyclear", "/ab supply clear")
+    ), List.of(
+            "gather",
+            new Help("chop", "/ab chop "),
+            new Help("mine", "/ab mine "),
             "ui",
             new Help("menu", "/ab menu"),
-            new Help("config", "/ab config")
+            new Help("config", "/ab config"),
+            new Help("hide", "/ab hide")
     ));
 
     private static int help() {
@@ -324,6 +354,27 @@ public final class ABCommands {
         return ok(Lang.t("msg.corner", which, p.toShortString(), Selection.describe()));
     }
 
+    private static int chop(int radius) {
+        if (!com.autobuilder.build.ServerPolicy.allowed()) return err(Lang.t("msg.server_disabled_token", com.autobuilder.build.ServerPolicy.TOKEN));
+        com.autobuilder.build.Gather.startChop(radius);
+        return 1;
+    }
+
+    private static int mine(int length, int branch) {
+        if (!com.autobuilder.build.ServerPolicy.allowed()) return err(Lang.t("msg.server_disabled_token", com.autobuilder.build.ServerPolicy.TOKEN));
+        com.autobuilder.build.Gather.startMine(length, branch);
+        return 1;
+    }
+
+    private static int wand(Boolean on) {
+        if (on != null) {
+            com.autobuilder.ABConfig.SELECTION_WAND.set(on);
+            com.autobuilder.ABConfig.SPEC.save();
+        }
+        String item = new net.minecraft.world.item.ItemStack(com.autobuilder.build.SelectionWand.item()).getHoverName().getString();
+        return ok(Lang.t(com.autobuilder.ABConfig.SELECTION_WAND.get() ? "cmd.wand_on" : "cmd.wand_off", item));
+    }
+
     private static int saveSelection(String name, boolean includeAir) {
         if (!Selection.complete()) return err(Lang.t("cmd.need_corners"));
         return save(Selection.pos1(), Selection.pos2(), name, includeAir);
@@ -348,8 +399,12 @@ public final class ABCommands {
 
     private static int save(BlockPos a, BlockPos b, String name, boolean includeAir) {
         try {
-            Path out = BlueprintSaver.save(Minecraft.getInstance().level, a, b, name.trim(), includeAir);
-            return ok(Lang.t("cmd.saved", out));
+            // 从选区外面连进来的水（湖、河、海）不存，选区里面的水流照常存
+            BlueprintSaver.Result r = BlueprintSaver.save(Minecraft.getInstance().level, a, b, name.trim(), includeAir,
+                    com.autobuilder.ABConfig.DROP_OUTER_WATER.get());
+            if (r.droppedWater() > 0 || r.dried() > 0) say("\u00a77" + Lang.t("cmd.saved_water", r.droppedWater(), r.dried()));
+            if (r.keptWater() > 0) say("\u00a77" + Lang.t("cmd.saved_kept_water", r.keptWater()));
+            return ok(Lang.t("cmd.saved", r.path()));
         } catch (Exception e) {
             return err(Lang.t("msg.save_failed", e.getMessage()));
         }

@@ -56,8 +56,15 @@ public class ToolsScreen extends Screen {
             includeAir = !includeAir;
             b.setMessage(airLabel());
         }).bounds(x0, y, bw, 20).build());
-        addRenderableWidget(btn(Lang.t("tools.save"), x1, y, bw, this::save));
-        y += 34;
+        // 从选区外面连进来的水（湖、河、海）存不存
+        addRenderableWidget(Button.builder(waterLabel(), b -> {
+            com.autobuilder.ABConfig.DROP_OUTER_WATER.set(!com.autobuilder.ABConfig.DROP_OUTER_WATER.get());
+            com.autobuilder.ABConfig.SPEC.save();
+            b.setMessage(waterLabel());
+        }).bounds(x1, y, bw, 20).build());
+        y += 24;
+        addRenderableWidget(btn(Lang.t("tools.save"), x0, y, bw * 2 + gap, this::save));
+        y += 28;
         addRenderableWidget(btn(Lang.t("tools.supply_add"), x0, y, bw, () -> {
             if (!SupplyManager.isContainer(aimed)) {
                 message = "§c" + Lang.t("tools.not_container");
@@ -73,6 +80,20 @@ public class ToolsScreen extends Screen {
             message = "§a" + Lang.t("tools.cleared");
         }));
         addRenderableWidget(btn(Lang.t("gui.back"), x1, y, bw, () -> minecraft.setScreen(parent)));
+        y += 24;
+        // 砍树、挖矿：关掉界面直接开始
+        addRenderableWidget(btn(Lang.t("tools.chop"), x0, y, bw, () -> {
+            onClose();
+            minecraft.player.connection.sendCommand("ab chop");
+        }));
+        addRenderableWidget(btn(Lang.t("tools.mine"), x1, y, bw, () -> {
+            onClose();
+            minecraft.player.connection.sendCommand("ab mine");
+        }));
+    }
+
+    private Component waterLabel() {
+        return Component.literal(Lang.t(com.autobuilder.ABConfig.DROP_OUTER_WATER.get() ? "tools.water_drop" : "tools.water_keep"));
     }
 
     private Component airLabel() {
@@ -94,8 +115,10 @@ public class ToolsScreen extends Screen {
             return;
         }
         try {
-            Path out = BlueprintSaver.save(minecraft.level, Selection.pos1(), Selection.pos2(), n, includeAir);
-            message = "§a" + Lang.t("tools.saved", out.getFileName());
+            BlueprintSaver.Result r = BlueprintSaver.save(minecraft.level, Selection.pos1(), Selection.pos2(), n, includeAir,
+                    com.autobuilder.ABConfig.DROP_OUTER_WATER.get());
+            message = "§a" + (r.droppedWater() > 0 ? Lang.t("tools.saved_water", r.path().getFileName(), r.droppedWater())
+                    : Lang.t("tools.saved", r.path().getFileName()));
         } catch (Exception e) {
             message = "§c" + Lang.t("msg.save_failed", e.getMessage());
         }

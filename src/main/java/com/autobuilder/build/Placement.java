@@ -21,6 +21,8 @@ public final class Placement {
     private Mirror mirror = Mirror.NONE;
     private BlockState[] palette; // 变换后的调色板缓存
     private int version; // 每次变换 +1，扫描器据此重置
+    /** 砍树/挖矿临时生成的蓝图：不存断点、不提示“建造完成”、空气位置一律清掉 */
+    public boolean temporary;
 
     public Placement(Blueprint bp, BlockPos origin) {
         this.bp = bp;
@@ -32,6 +34,11 @@ public final class Placement {
     public Rotation rotation() { return rotation; }
     public Mirror mirror() { return mirror; }
     public int version() { return version; }
+
+    /** 蓝图内容在外面被改了（挖矿时把露出来的矿加进去），让扫描器重扫 */
+    public void touch() {
+        version++;
+    }
 
     private boolean swapped() {
         return rotation == Rotation.CLOCKWISE_90 || rotation == Rotation.COUNTERCLOCKWISE_90;

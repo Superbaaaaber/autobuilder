@@ -21,7 +21,12 @@ import net.minecraft.world.level.block.state.properties.SlabType;
  * 楼梯拐角、栅栏连接、含水、充能这类由周围环境自动决定的属性不比较。
  */
 public final class StateMatcher {
-    public enum Status { IGNORE, OK, PLACE, BREAK, INTERACT, WAIT, WRONG, UNSUPPORTED, FLUID, WATERLOG }
+    /**
+     * TILL：先放了泥土，还要用锄头/铲子加工成耕地/土径；
+     * DRAIN：蓝图是空气、世界里是液体源头，要先填掉（抽水）；
+     * UNWATERLOG：方块对了但泡着水（放进水里时自动含水），要用空桶把水舀走。
+     */
+    public enum Status { IGNORE, OK, PLACE, BREAK, INTERACT, WAIT, WRONG, UNSUPPORTED, FLUID, WATERLOG, TILL, DRAIN, UNWATERLOG }
 
     /** 放置时决定、必须一致的属性 */
     private static final Set<Property<?>> PLACEMENT = Set.of(
@@ -41,10 +46,67 @@ public final class StateMatcher {
 
     /** 放置时需要手持的物品；拿不到（比如水、火、传送门）返回 null */
     public static Item itemFor(BlockState target) {
+        // 草方块、耕地、土径生存里拿不到：放泥土（耕地/土径放完再用锄头/铲子加工）
+        if (isDirtFamily(target)) return Items.DIRT;
         Item item = target.getBlock().asItem();
         if (item == Items.AIR || !(item instanceof BlockItem)) return null;
         return item;
     }
+
+    /** 草方块、泥土、耕地、土径：都用泥土放 */
+    public static boolean isDirtFamily(BlockState s) {
+        return s.is(Blocks.GRASS_BLOCK) || s.is(Blocks.DIRT) || s.is(Blocks.FARMLAND) || s.is(Blocks.DIRT_PATH);
+    }
+
+    /** 实际要放下去的方块：泥土类都是先放泥土 */
+    public static BlockState placeForm(BlockState target) {
+        return isDirtFamily(target) ? Blocks.DIRT.defaultBlockState() : target;
+    }
+
+    /** 耕地要锄头、土径要铲子；不需要工具返回 null */
+    public static java.util.function.Predicate<net.minecraft.world.item.ItemStack> toolFor(BlockState target) {
+        if (target.is(Blocks.FARMLAND)) return s -> s.getItem() instanceof net.minecraft.world.item.HoeItem && usable(s);
+        if (target.is(Blocks.DIRT_PATH)) return s -> s.getItem() instanceof net.minecraft.world.item.ShovelItem && usable(s);
+        return null;
+    }
+
+    /** 缺工具时提示用的物品 */
+    public static Item toolItem(BlockState target) {
+        return target.is(Blocks.FARMLAND) ? Items.WOODEN_HOE : Items.WOODEN_SHOVEL;
+    }
+
+    private static boolean usable(net.minecraft.world.item.ItemStack s) {
+        return !s.isDamageableItem() || s.getMaxDamage() - s.getDamageValue() > 1;
+    }
+
+    /** 泥土类方块的特殊判断；不属于这些情况返回 null，按普通方块处理 */
+    private static Status classifyDirt(BlockState target, BlockState world) {
+        if (!isDirtFamily(target)) return null;
+        boolean dirtOrGrass = world.is(Blocks.DIRT) || world.is(Blocks.GRASS_BLOCK);
+        if (target.is(Blocks.GRASS_BLOCK) || target.is(Blocks.DIRT)) {
+            // 泥土挨着草会自己长草，草方块挖了掉泥土：两者互相算对，免得反复挖了放、放了挖
+            return dirtOrGrass ? Status.OK : null;
+        }
+        if (world.getBlock() == target.getBlock()) return Status.OK; // 耕地湿度不比较
+        return dirtOrGrass ? Status.TILL : null;
+    }
+
+    /** 建好后挡得住水的方块：整块、含水类（台阶/楼梯/栅栏等，流水进不去）、门、告示牌、梯子 */
+    public static boolean watertight(BlockState t) {
+        if (t == null || t.isAir() || t.getBlock() instanceof LiquidBlock) return false;
+        var b = t.getBlock();
+        if (b instanceof net.minecraft.world.level.block.DoorBlock || t.is(net.minecraft.tags.BlockTags.SIGNS) || t.is(Blocks.LADDER)) return true;
+        if (t.hasProperty(BlockStateProperties.WATERLOGGED)) return true;
+        return t.blocksMotion();
+    }
+
+    /** 抽水开关：蓝图是空气的地方有液体源头就填掉 */
+    private static boolean drainOn() {
+        return !drainBlocked && com.autobuilder.ABConfig.DRAIN_WATER.get();
+    }
+
+    /** 砍树/挖矿时不抽水（由 BuildController 每 tick 设置） */
+    public static boolean drainBlocked;
 
     public static boolean isUnsupported(BlockState target) {
         if (target.getBlock() instanceof LiquidBlock) return bucketFor(target) == null;
@@ -117,9 +179,17 @@ public final class StateMatcher {
             return breakWrong && breakable(world) ? Status.BREAK : Status.WRONG;
         }
         if (target.isAir()) {
+            // 抽水：空气位置上的水/岩浆源头先用方块填掉（流动的不用管，源头没了自己会干）
+            if (clearAir && world.getBlock() instanceof LiquidBlock && world.getFluidState().isSource() && drainOn()) return Status.DRAIN;
             if (isSoft(world)) return Status.OK;
             if (!clearAir) return Status.OK;
             return breakable(world) ? Status.BREAK : Status.OK;
+        }
+        Status dirt = classifyDirt(target, world);
+        if (dirt != null) return dirt;
+        // 同类材料（别的木头、别的颜色）：当成同一种方块比属性
+        if (world.getBlock() != target.getBlock() && Substitutes.same(target.getBlock(), world.getBlock())) {
+            target = Substitutes.swap(target, world.getBlock());
         }
         if (world.getBlock() == target.getBlock()) {
             if (isSecondaryPart(target)) return Status.OK;
@@ -160,18 +230,21 @@ public final class StateMatcher {
         }
         if (needMore) return Status.PLACE;
         if (needInteract) return Status.INTERACT;
-        if (target.hasProperty(BlockStateProperties.WATERLOGGED) && target.getValue(BlockStateProperties.WATERLOGGED)
-                && world.hasProperty(BlockStateProperties.WATERLOGGED) && !world.getValue(BlockStateProperties.WATERLOGGED)) {
-            return Status.WATERLOG;
+        if (target.hasProperty(BlockStateProperties.WATERLOGGED) && world.hasProperty(BlockStateProperties.WATERLOGGED)) {
+            boolean tw = target.getValue(BlockStateProperties.WATERLOGGED), ww = world.getValue(BlockStateProperties.WATERLOGGED);
+            if (tw && !ww) return Status.WATERLOG;
+            // 放进水里自动泡了水，蓝图里是干的：用空桶舀掉
+            if (!tw && ww && drainOn()) return Status.UNWATERLOG;
         }
         return Status.OK;
     }
 
     /** 模拟放置的结果能否接受：完全符合、只差交互属性、或者数量往目标方向加了 1 */
     public static boolean acceptable(BlockState target, BlockState before, BlockState result) {
+        target = placeForm(target);
         if (result == null || result.getBlock() != target.getBlock()) return false;
         Status st = classify(target, result, true, true);
-        if (st == Status.OK || st == Status.INTERACT || st == Status.WATERLOG) return true;
+        if (st == Status.OK || st == Status.INTERACT || st == Status.WATERLOG || st == Status.UNWATERLOG) return true;
         if (st == Status.PLACE && before.getBlock() == target.getBlock()) {
             // 叠加类：结果要比放之前更接近目标
             for (Property<?> p : target.getProperties()) {
