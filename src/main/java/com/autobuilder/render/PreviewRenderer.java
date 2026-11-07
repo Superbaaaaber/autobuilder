@@ -27,24 +27,38 @@ import net.neoforged.neoforge.client.model.data.ModelData;
 /** 世界里的预览：包围盒、半透明待放方块、红框（要挖）、紫框（放错且不挖）、黄框（要调整）、橙框（脚手架） */
 public final class PreviewRenderer {
     private static final MultiBufferSource.BufferSource GHOST_BUFFERS = MultiBufferSource.immediate(new ByteBufferBuilder(1 << 20));
-    private static final int MAX_GHOSTS = 4000;
 
     /** 手动隐藏投影（按 H 或主界面按钮切换） */
     private static boolean hidden;
+    /** 开了“建造时隐藏”、建造中又手动切回显示：这次建造期间一直显示，停下或建完后恢复 */
+    private static boolean shownWhileBuilding;
 
     private PreviewRenderer() {}
 
-    /** 现在要不要隐藏投影：手动隐藏了，或者设置了“建造时隐藏”且正在建造 */
+    /** 现在要不要隐藏投影：手动隐藏了，或者设置了“建造时隐藏”且正在建造（建造中手动切回显示的除外） */
     public static boolean hidden() {
-        return hidden || ABConfig.HIDE_WHILE_BUILDING.get() && BuildController.state() == BuildController.State.RUNNING;
+        var st = BuildController.state();
+        if (st == BuildController.State.IDLE || st == BuildController.State.DONE) shownWhileBuilding = false;
+        if (hidden) return true;
+        return ABConfig.HIDE_WHILE_BUILDING.get() && st == BuildController.State.RUNNING && !shownWhileBuilding;
     }
 
     public static boolean manuallyHidden() {
         return hidden;
     }
 
+    /**
+     * 按看到的状态切换：现在隐藏着就显示，显示着就隐藏。
+     * 原来只翻转“手动隐藏”：开了“建造时隐藏”时建造中怎么按都还是隐藏的，切不回来。
+     */
     public static void toggleHidden() {
-        hidden = !hidden;
+        if (hidden()) {
+            hidden = false;
+            shownWhileBuilding = true;
+        } else {
+            hidden = true;
+            shownWhileBuilding = false;
+        }
     }
 
     private static void renderSelection(RenderLevelStageEvent e, Minecraft mc, Vec3 cam) {
@@ -81,9 +95,13 @@ public final class PreviewRenderer {
         double range = ABConfig.RENDER_RANGE.get();
         double r2 = range * range;
         if (s != null) {
-            for (BlockPos b : s.breaks) {
+            // 挖空大选区时待挖的格子可能有几万个：从上往下（扫描顺序反过来）最多画 MAX_GHOSTS 个，免得掉帧
+            int drawn = 0, maxBoxes = ABConfig.SHOW_BREAK_OUTLINES.get() ? ABConfig.MAX_GHOSTS.get() : 0;
+            for (int i = s.breaks.size() - 1; i >= 0 && drawn < maxBoxes; i--) {
+                BlockPos b = s.breaks.get(i);
                 if (b.distToCenterSqr(cam) > r2) continue;
                 LevelRenderer.renderLineBox(ps, lines, new AABB(b).inflate(0.004), 1f, 0.25f, 0.25f, 1f);
+                drawn++;
             }
             for (BlockPos b : s.wrong) {
                 if (b.distToCenterSqr(cam) > r2) continue;
@@ -98,6 +116,11 @@ public final class PreviewRenderer {
                 if (b.distToCenterSqr(cam) > r2) continue;
                 LevelRenderer.renderLineBox(ps, lines, new AABB(b).deflate(0.15), 0.2f, 0.9f, 0.9f, 1f);
             }
+            // 要垫挡水方块的格子：蓝色框
+            for (BlockPos b : BuildController.dams()) {
+                if (b.distToCenterSqr(cam) > r2) continue;
+                LevelRenderer.renderLineBox(ps, lines, new AABB(b).deflate(0.1), 0.25f, 0.4f, 1f, 1f);
+            }
         }
         for (BlockPos b : BuildController.scaffold()) {
             if (b.distToCenterSqr(cam) > r2) continue;
@@ -107,13 +130,13 @@ public final class PreviewRenderer {
 
         if (ABConfig.RENDER_GHOSTS.get() && s != null) {
             BlockRenderDispatcher br = mc.getBlockRenderer();
-            MultiBufferSource ghost = type -> new AlphaConsumer(GHOST_BUFFERS.getBuffer(type), 0.45f);
+            MultiBufferSource ghost = type -> new AlphaConsumer(GHOST_BUFFERS.getBuffer(type), ABConfig.GHOST_OPACITY.get() / 100f);
             RenderType rt = Sheets.translucentCullBlockSheet();
             int n = 0;
             VertexConsumer outline = null;
             for (BlockPos b : s.place) {
                 if (b.distToCenterSqr(cam) > r2) continue;
-                if (n++ > MAX_GHOSTS) break;
+                if (n++ > ABConfig.MAX_GHOSTS.get()) break;
                 BlockState t = pl.targetAt(b);
                 if (t == null) continue;
                 BlockState w = mc.level.getBlockState(b);

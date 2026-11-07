@@ -32,10 +32,16 @@ import net.neoforged.neoforge.common.Tags;
  * 自动砍树、自动挖矿。
  * 做法：把“要清掉的格子”生成一个临时蓝图（这些格子是空气，其余不管），交给 BuildController 去“建”，
  * 寻路、垫柱子、拆脚手架、溺水自救、回血等全部沿用建造的逻辑。
- * 挖矿只挖巷道挖开后露出来的矿（顺着矿脉挖），不去挖藏在石头里看不见的矿——那等于透视，服务器一般算作弊。
+ * 支巷挖矿（/ab mine）只挖巷道挖开后露出来的矿；找矿（/ab ore）直接按客户端已加载的区块找矿脉挖过去（相当于矿物透视）。
+ * 挖空选区（/ab excavate）把选区里能挖的方块全挖掉，从上往下一层层挖。
  */
 public final class Gather {
-    public enum Kind { CHOP, MINE }
+    public enum Kind { CHOP, MINE, ORE, EXCAVATE }
+
+
+
+    /** 找矿能用的矿种关键字（方块 id 里包含它就算） */
+    public static final List<String> ORE_KINDS = List.of("all", "diamond", "iron", "gold", "redstone", "lapis", "emerald", "coal", "copper", "debris", "quartz");
 
     private static final Minecraft MC = Minecraft.getInstance();
     private static Kind kind;
@@ -53,8 +59,18 @@ public final class Gather {
     private static final List<BlockPos> OPEN = new ArrayList<>();
     private static final Set<Long> ORES = new HashSet<>();
     private static int tunnelCells;
-    /** 背包满了也不扔的杂物数量（留着垫脚） */
-    private static final int KEEP_SCAFFOLD = 128;
+    /** 找矿：矿种、当前这条矿脉、挖到的块数 */
+    private static String oreKind = "all";
+    private static List<BlockPos> currentVein;
+    private static int oreMined;
+    private static boolean warnedMp;
+    /** 存放箱：开工时背包里每种物品有多少（原来带的不存，只存这次挖到的）；收工前去存东西时先记下结束语 */
+    private static final java.util.Map<Item, Integer> BASELINE = new java.util.HashMap<>();
+    private static String pendingEnd;
+    private static boolean dumpTipShown, wasDepositing;
+    /** 挖空：开始时要挖的块数、选区里有没有要镐子才挖得动的方块 */
+    private static int digTotal;
+    private static boolean needPick;
 
     private Gather() {}
 
@@ -73,6 +89,7 @@ public final class Gather {
         if (p == null) return;
         cancel();
         BuildController.parkForGather();
+        beginJob(p);
         kind = Kind.CHOP;
         active = true;
         home = p.blockPosition();
@@ -92,6 +109,7 @@ public final class Gather {
         }
         cancel();
         BuildController.parkForGather();
+        beginJob(p);
         kind = Kind.MINE;
         active = true;
         ORES.clear();
@@ -101,16 +119,213 @@ public final class Gather {
         run(pl);
     }
 
+    /**
+     * 找矿：在已加载的区块里找 r 格内的矿（矿种 kind，all 表示所有矿），挖到最近的一条矿脉，挖完再找下一条。
+     */
+    public static void startOre(String kindArg, int r) {
+        LocalPlayer p = MC.player;
+        if (p == null) return;
+        if (!hasPickaxe(p)) {
+            BuildController.msg(Lang.t("gather.no_pickaxe"), ChatFormatting.RED);
+            return;
+        }
+        cancel();
+        BuildController.parkForGather();
+        beginJob(p);
+        kind = Kind.ORE;
+        active = true;
+        oreKind = kindArg;
+        home = p.blockPosition();
+        radius = r;
+        oreMined = 0;
+        SKIP.clear();
+        BuildController.msg(Lang.t("gather.ore_start", r, oreLabel()), ChatFormatting.GREEN);
+        if (MC.getSingleplayerServer() == null && !warnedMp) {
+            warnedMp = true;
+            BuildController.msg(Lang.t("gather.ore_mp_note"), ChatFormatting.YELLOW);
+        }
+        nextVein();
+    }
+
+    /**
+     * 挖空选区：两个角之间所有能挖的方块都挖掉（空气、水、岩浆不管），从上往下一层层挖，挖出来的石头泥土背包满了就扔。
+     * 箱子、木桶、熔炉这类装东西的方块不挖（免得东西撒一地）；挨着水和岩浆的不挖（沿用砍树挖矿的规则，不把水放进坑里）。
+     */
+    public static void startExcavate(BlockPos a, BlockPos b) {
+        LocalPlayer p = MC.player;
+        ClientLevel level = MC.level;
+        if (p == null || level == null) return;
+        int minX = Math.min(a.getX(), b.getX()), minY = Math.max(level.getMinBuildHeight(), Math.min(a.getY(), b.getY()));
+        int minZ = Math.min(a.getZ(), b.getZ());
+        int maxX = Math.max(a.getX(), b.getX()), maxY = Math.min(level.getMaxBuildHeight() - 1, Math.max(a.getY(), b.getY()));
+        int maxZ = Math.max(a.getZ(), b.getZ());
+        if (maxY < minY) {
+            BuildController.msg(Lang.t("gather.excavate_empty"), ChatFormatting.YELLOW);
+            return;
+        }
+        int sx = maxX - minX + 1, sy = maxY - minY + 1, sz = maxZ - minZ + 1;
+        long vol = (long) sx * sy * sz;
+        int max = com.autobuilder.ABConfig.MAX_EXCAVATE.get();
+        if (vol > max) {
+            BuildController.msg(Lang.t("gather.excavate_too_big", sx, sy, sz, vol, max), ChatFormatting.RED);
+            return;
+        }
+        Blueprint bp = new Blueprint(Lang.t("gather.excavate_name"), sx, sy, sz);
+        BlockState air = Blocks.AIR.defaultBlockState();
+        BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+        int count = 0, containers = 0;
+        boolean pick = false;
+        for (int y = 0; y < sy; y++)
+            for (int z = 0; z < sz; z++)
+                for (int x = 0; x < sx; x++) {
+                    m.set(minX + x, minY + y, minZ + z);
+                    if (!level.isLoaded(m)) {
+                        BuildController.msg(Lang.t("gather.excavate_unloaded"), ChatFormatting.RED);
+                        return;
+                    }
+                    BlockState s = level.getBlockState(m);
+                    // 末影箱也不挖：没有精准采集只掉黑曜石，箱子就没了
+                    var be = level.getBlockEntity(m);
+                    if (com.autobuilder.ABConfig.EXCAVATE_KEEP_CONTAINERS.get()
+                            && (be instanceof net.minecraft.world.Container || be instanceof net.minecraft.world.level.block.entity.EnderChestBlockEntity)) {
+                        containers++;
+                        continue; // 不设目标 = 不管它
+                    }
+                    bp.set(x, y, z, air);
+                    if (!StateMatcher.breakable(s) || StateMatcher.isSoft(s)) continue;
+                    count++;
+                    if (s.requiresCorrectToolForDrops() && s.is(BlockTags.MINEABLE_WITH_PICKAXE)) pick = true;
+                }
+        if (count == 0) {
+            BuildController.msg(Lang.t("gather.excavate_empty"), ChatFormatting.YELLOW);
+            return;
+        }
+        if (pick && !hasPickaxe(p)) {
+            BuildController.msg(Lang.t("gather.excavate_no_pickaxe"), ChatFormatting.RED);
+            return;
+        }
+        cancel();
+        BuildController.parkForGather();
+        beginJob(p);
+        kind = Kind.EXCAVATE;
+        active = true;
+        digTotal = count;
+        needPick = pick;
+        String box = new BlockPos(minX, minY, minZ).toShortString() + " ~ " + new BlockPos(maxX, maxY, maxZ).toShortString();
+        BuildController.msg(Lang.t("gather.excavate_start", box, sx, sy, sz, count)
+                + (containers > 0 ? Lang.t("gather.excavate_containers", containers) : ""), ChatFormatting.GREEN);
+        Placement pl = new Placement(bp, new BlockPos(minX, minY, minZ));
+        pl.layered = true;
+        run(pl);
+    }
+
+    /** 挖空：选区里还剩几块能挖的（容器不算） */
+    private static int excavateLeft(Placement pl) {
+        ClientLevel level = MC.level;
+        if (level == null || pl == null) return 0;
+        BlockPos o = pl.origin();
+        BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+        int n = 0;
+        for (int y = 0; y < pl.sizeY(); y++)
+            for (int z = 0; z < pl.sizeZ(); z++)
+                for (int x = 0; x < pl.sizeX(); x++) {
+                    m.set(o.getX() + x, o.getY() + y, o.getZ() + z);
+                    if (pl.targetAt(m) == null) continue;
+                    BlockState s = level.getBlockState(m);
+                    if (StateMatcher.breakable(s) && !StateMatcher.isSoft(s)) n++;
+                }
+        return n;
+    }
+
+    private static void endExcavate(Placement pl, boolean stopped) {
+        int left = excavateLeft(pl);
+        int dug = Math.max(0, digTotal - left);
+        if (stopped) end(Lang.t("gather.excavate_stopped", dug, left), false);
+        else if (left == 0) end(Lang.t("gather.excavate_done", dug), true);
+        else end(Lang.t("gather.excavate_left", dug, left), true);
+    }
+
+    private static String oreLabel() {
+        return Lang.t("ore.kind." + oreKind);
+    }
+
     /** 用户停止/卸载时调用：不再安排下一个，临时蓝图交给调用者处理 */
     public static void cancel() {
         active = false;
         currentBase = null;
+        pendingEnd = null;
     }
 
-    private static void end(String text) {
+    /**
+     * 收工。deposit=true（正常做完，不是用户停的）而且登记了存放箱：先回去把挖到的东西存了，存完再收工。
+     * 去存东西时 BuildController 照常运行（只做存货），存完变成 DONE，tick 里再走到这里真正收工。
+     */
+    private static void end(String text, boolean deposit) {
+        LocalPlayer p = MC.player;
+        if (deposit && com.autobuilder.ABConfig.DEPOSIT_AT_END.get() && pendingEnd == null && p != null && Restocker.depositUsable()) {
+            var keep = keepAmounts(p);
+            BuildController.start();
+            if (BuildController.state() == BuildController.State.RUNNING && Restocker.startDeposit(MC, keep)) {
+                BuildController.depositOnly = true;
+                pendingEnd = text;
+                return;
+            }
+        }
+        String extra = pendingEnd != null && Restocker.lastDeposited() > 0 ? Lang.t("deposit.summary", Restocker.lastDeposited()) : "";
+        pendingEnd = null;
         active = false;
         BuildController.endTemporary();
-        BuildController.msg(text, ChatFormatting.GREEN);
+        BuildController.msg(text + extra, ChatFormatting.GREEN);
+    }
+
+    /** 开工：记下背包里原来有什么（存东西时不动这些），没登记存放箱的话提示一次 */
+    private static void beginJob(LocalPlayer p) {
+        com.autobuilder.Diag.session(new Object(), "砍树/挖矿/找矿/挖空");
+        BASELINE.clear();
+        for (int i = 0; i < 36; i++) {
+            ItemStack s = p.getInventory().getItem(i);
+            if (!s.isEmpty()) BASELINE.merge(s.getItem(), s.getCount(), Integer::sum);
+        }
+        pendingEnd = null;
+        wasDepositing = false;
+        if (!SupplyManager.anyDump() && !dumpTipShown) {
+            dumpTipShown = true;
+            BuildController.msg(Lang.t("deposit.tip"), ChatFormatting.GRAY);
+        }
+    }
+
+    /** 这种东西一个都不存：工具武器盔甲（有耐久）、食物、桶、火把、选区木棍、潜影盒；砍树时的树苗（要补种） */
+    private static boolean keepAll(ItemStack s) {
+        Item it = s.getItem();
+        if (s.isDamageableItem() || s.has(net.minecraft.core.component.DataComponents.FOOD)
+                || s.has(net.minecraft.core.component.DataComponents.CONTAINER)) return true;
+        if (it instanceof net.minecraft.world.item.BucketItem || it == Items.MILK_BUCKET) return true;
+        if (it == SelectionWand.item() || com.autobuilder.ABConfig.items(com.autobuilder.ABConfig.NEVER_STORE).contains(it)) return true;
+        return kind == Kind.CHOP && s.is(net.minecraft.tags.ItemTags.SAPLINGS);
+    }
+
+    /**
+     * 存东西时每种物品至少留多少：上面那些全留；其余留开工时的数量。
+     * 垫脚方块总共只多留一组（背包里最多的那种），每种都留一组会占掉好几格，没挖几块又满了
+     */
+    private static java.util.Map<Item, Integer> keepAmounts(LocalPlayer p) {
+        java.util.Map<Item, Integer> keep = new java.util.HashMap<>();
+        Item scaffold = null;
+        int most = 0;
+        for (int i = 0; i < 36; i++) {
+            ItemStack s = p.getInventory().getItem(i);
+            if (s.isEmpty() || keep.containsKey(s.getItem())) continue;
+            keep.put(s.getItem(), keepAll(s) ? Integer.MAX_VALUE : BASELINE.getOrDefault(s.getItem(), 0));
+            if (ScaffoldItems.items().contains(s.getItem()) && s.getItem() instanceof net.minecraft.world.item.BlockItem) {
+                int n = InventoryHelper.count(p, s.getItem());
+                if (n > most) {
+                    most = n;
+                    scaffold = s.getItem();
+                }
+            }
+        }
+        if (scaffold != null && keep.get(scaffold) != Integer.MAX_VALUE) keep.merge(scaffold, com.autobuilder.ABConfig.KEEP_SCAFFOLD_STORE.get(), Math::max);
+        return keep;
     }
 
     private static void run(Placement pl) {
@@ -133,9 +348,29 @@ public final class Gather {
             return;
         }
         var st = BuildController.state();
+        if (pendingEnd != null) {
+            // 活已经干完，正在回去存东西：存完（DONE）或者被用户停下（IDLE）就收工
+            if (st == BuildController.State.DONE || st == BuildController.State.IDLE) end(pendingEnd, false);
+            return;
+        }
+        boolean dep = Restocker.depositing();
+        if (wasDepositing && !dep && Restocker.lastDeposited() > 0) {
+            BuildController.msg(Lang.t("deposit.done", Restocker.lastDeposited()), ChatFormatting.AQUA);
+        }
+        wasDepositing = dep;
         if (st == BuildController.State.IDLE) {
             // 用户 /ab stop
-            end(kind == Kind.CHOP ? Lang.t("gather.chop_stopped", trees) : Lang.t("gather.mine_stopped", minedOres()));
+            if (kind == Kind.EXCAVATE) {
+                endExcavate(pl, true);
+                return;
+            }
+            if (kind == Kind.ORE) countVein();
+            end(switch (kind) {
+                case CHOP -> Lang.t("gather.chop_stopped", trees);
+                case MINE -> Lang.t("gather.mine_stopped", minedOres());
+                case ORE -> Lang.t("gather.ore_stopped", oreMined);
+                case EXCAVATE -> "";
+            }, false);
             return;
         }
         if (st == BuildController.State.PAUSED) return; // 等用户按 N 继续
@@ -148,22 +383,33 @@ public final class Gather {
                     waitUntil = ticks + 20; // 等掉落物落地，顺便捡
                 }
                 if (ticks >= waitUntil) nextTree();
+            } else if (kind == Kind.ORE) {
+                countVein();
+                nextVein();
+            } else if (kind == Kind.EXCAVATE) {
+                endExcavate(pl, false);
             } else {
-                end(Lang.t("gather.mine_done", tunnelCells, minedOres()));
+                end(Lang.t("gather.mine_done", tunnelCells, minedOres()), true);
             }
             return;
         }
         // RUNNING
+        if (dep) return; // 正在去存放箱，存完 BuildController 自己接着干
+        if (ticks % 20 == 0 && freeSlots(p) < com.autobuilder.ABConfig.DEPOSIT_FREE_SLOTS.get() && Restocker.depositUsable()) {
+            // 背包快满了：有存放箱就回去存，存不了（没东西可存、箱子都去不了）先改回扔杂物
+            if (Restocker.startDeposit(MC, keepAmounts(p))) return;
+            Restocker.blockDeposit();
+        }
         if (ticks % 20 == 0 && !makeRoom(p)) {
             BuildController.pause(Lang.t("reason.inv_full"));
             return;
         }
-        if (kind == Kind.MINE) {
+        if (kind == Kind.MINE || kind == Kind.ORE || kind == Kind.EXCAVATE && needPick) {
             if (!hasPickaxe(p)) {
                 BuildController.pause(Lang.t("reason.no_pickaxe"));
                 return;
             }
-            if (ticks % 10 == 0) exposeOres(pl);
+            if (kind == Kind.MINE && ticks % 10 == 0) exposeOres(pl);
         }
     }
 
@@ -174,7 +420,7 @@ public final class Gather {
         ClientLevel level = MC.level;
         List<BlockPos> tree = findTree(level, p);
         if (tree == null) {
-            end(Lang.t("gather.chop_done", radius, trees));
+            end(Lang.t("gather.chop_done", radius, trees), true);
             return;
         }
         BlockPos base = tree.get(0);
@@ -270,7 +516,7 @@ public final class Gather {
                 BlockState n = level.getBlockState(c.relative(d));
                 if (naturalLeaf(n)) natural++;
                 else if (n.getBlock() instanceof LeavesBlock) persistent++;
-                if (buildingBlock(n)) return List.of();
+                if (com.autobuilder.ABConfig.PROTECT_BUILDINGS.get() && buildingBlock(n)) return List.of();
             }
             for (int dy = -1; dy <= 1; dy++)
                 for (int dz = -1; dz <= 1; dz++)
@@ -296,6 +542,73 @@ public final class Gather {
         if (sp == null || path.startsWith("mangrove")) return null;
         ResourceLocation sid = ResourceLocation.fromNamespaceAndPath(id.getNamespace(), sp);
         return BuiltInRegistries.BLOCK.containsKey(sid) ? BuiltInRegistries.BLOCK.get(sid) : null;
+    }
+
+    // ---------------- 找矿（按已加载区块里的矿找过去） ----------------
+
+    private static boolean wantOre(BlockState s) {
+        if (!isOre(s)) return false;
+        if (oreKind.equals("all")) return true;
+        return BuiltInRegistries.BLOCK.getKey(s.getBlock()).getPath().contains(oreKind);
+    }
+
+    /** 上一条矿脉挖完了：数一数挖掉了几块，挖不到的记下来不再找 */
+    private static void countVein() {
+        if (currentVein == null) return;
+        ClientLevel level = MC.level;
+        for (BlockPos b : currentVein) {
+            if (level != null && !wantOre(level.getBlockState(b))) oreMined++;
+            else SKIP.add(b.asLong());
+        }
+        currentVein = null;
+    }
+
+    private static void nextVein() {
+        LocalPlayer p = MC.player;
+        ClientLevel level = MC.level;
+        List<BlockPos> found = new ArrayList<>();
+        BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+        int y0 = Math.max(level.getMinBuildHeight(), home.getY() - radius), y1 = Math.min(level.getMaxBuildHeight() - 1, home.getY() + radius);
+        for (int y = y0; y <= y1; y++)
+            for (int dz = -radius; dz <= radius; dz++)
+                for (int dx = -radius; dx <= radius; dx++) {
+                    m.set(home.getX() + dx, y, home.getZ() + dz);
+                    if (!level.isLoaded(m) || SKIP.contains(m.asLong())) continue;
+                    if (wantOre(level.getBlockState(m))) found.add(m.immutable());
+                }
+        if (found.isEmpty()) {
+            end(Lang.t("gather.ore_done", radius, oreLabel(), oreMined), true);
+            return;
+        }
+        BlockPos start = found.stream().min(Comparator.comparingDouble(b -> b.distToCenterSqr(p.position()))).get();
+        // 顺着相连的同类矿找整条矿脉
+        List<BlockPos> vein = new ArrayList<>();
+        Set<Long> seen = new HashSet<>();
+        ArrayDeque<BlockPos> q = new ArrayDeque<>();
+        q.add(start);
+        seen.add(start.asLong());
+        while (!q.isEmpty() && vein.size() < 64) {
+            BlockPos c = q.poll();
+            vein.add(c);
+            for (Direction d : Direction.values()) {
+                BlockPos n = c.relative(d);
+                if (seen.add(n.asLong()) && !SKIP.contains(n.asLong()) && wantOre(level.getBlockState(n))) q.add(n);
+            }
+        }
+        currentVein = vein;
+        int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
+        for (BlockPos b : vein) {
+            minX = Math.min(minX, b.getX());
+            minY = Math.min(minY, b.getY());
+            minZ = Math.min(minZ, b.getZ());
+            maxX = Math.max(maxX, b.getX());
+            maxY = Math.max(maxY, b.getY());
+            maxZ = Math.max(maxZ, b.getZ());
+        }
+        Blueprint bp = new Blueprint(Lang.t("gather.ore_name", oreLabel(), oreMined), maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1);
+        BlockState air = Blocks.AIR.defaultBlockState();
+        for (BlockPos b : vein) bp.set(b.getX() - minX, b.getY() - minY, b.getZ() - minZ, air);
+        run(new Placement(bp, new BlockPos(minX, minY, minZ)));
     }
 
     // ---------------- 挖矿 ----------------
@@ -387,10 +700,7 @@ public final class Gather {
 
     /** 挖矿挖出来一大堆没用的石头：这些算杂物，背包满了就扔（留两组垫脚） */
     private static boolean junk(Item it) {
-        return it == Items.COBBLESTONE || it == Items.COBBLED_DEEPSLATE || it == Items.DIRT || it == Items.GRAVEL
-                || it == Items.ANDESITE || it == Items.DIORITE || it == Items.GRANITE || it == Items.TUFF || it == Items.CALCITE
-                || it == Items.NETHERRACK || it == Items.DRIPSTONE_BLOCK || it == Items.POINTED_DRIPSTONE || it == Items.COARSE_DIRT
-                || it == Items.ROOTED_DIRT || it == Items.STONE || it == Items.DEEPSLATE;
+        return com.autobuilder.ABConfig.items(com.autobuilder.ABConfig.JUNK_ITEMS).contains(it);
     }
 
     private static int scaffoldCount(LocalPlayer p) {
@@ -402,7 +712,8 @@ public final class Gather {
     /** 砍树/挖矿时地上的东西捡不捡：杂物只在垫脚方块不够时捡 */
     public static boolean wanted(LocalPlayer p, Item it) {
         if (!junk(it)) return true;
-        return ScaffoldItems.items().contains(it) && scaffoldCount(p) < KEEP_SCAFFOLD;
+        if (com.autobuilder.ABConfig.PICKUP_JUNK.get() && Restocker.depositUsable()) return true; // 有存放箱：杂物也捡，回头存进去
+        return ScaffoldItems.items().contains(it) && scaffoldCount(p) < com.autobuilder.ABConfig.KEEP_SCAFFOLD_DROP.get();
     }
 
     private static int freeSlots(LocalPlayer p) {
@@ -415,7 +726,7 @@ public final class Gather {
     private static boolean makeRoom(LocalPlayer p) {
         if (freeSlots(p) >= 2) return true;
         if (!InventoryHelper.canSwap(p)) return true;
-        int keep = KEEP_SCAFFOLD;
+        int keep = com.autobuilder.ABConfig.KEEP_SCAFFOLD_DROP.get();
         // 先扔不能垫脚的杂物，再扔多出来的垫脚方块；从背包里面往外扔，快捷栏最后
         for (int pass = 0; pass < 2 && freeSlots(p) < 3; pass++) {
             for (int i = 35; i >= 0 && freeSlots(p) < 3; i--) {

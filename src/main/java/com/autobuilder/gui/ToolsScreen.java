@@ -46,7 +46,7 @@ public class ToolsScreen extends Screen {
             Selection.set(2, aimed);
             message = "§a" + Lang.t("tools.corner_set", 2, aimed.toShortString());
         }));
-        y += 36;
+        y += 26;
         name = new EditBox(font, x0, y, bw * 2 + gap - 0, 18, Component.literal(Lang.t("tools.name")));
         name.setMaxLength(64);
         name.setHint(Component.literal(Lang.t("tools.name_hint")));
@@ -64,31 +64,44 @@ public class ToolsScreen extends Screen {
         }).bounds(x1, y, bw, 20).build());
         y += 24;
         addRenderableWidget(btn(Lang.t("tools.save"), x0, y, bw * 2 + gap, this::save));
-        y += 28;
-        addRenderableWidget(btn(Lang.t("tools.supply_add"), x0, y, bw, () -> {
+        y += 26;
+        // 材料箱（缺料时去取）、存放箱（砍树挖矿时存东西）：一行三个，界面矮放不下更多行
+        int w3 = (bw * 2 + gap - 2 * gap) / 3;
+        addRenderableWidget(btn(Lang.t("tools.supply_add"), x0, y, w3, () -> {
             if (!SupplyManager.isContainer(aimed)) {
                 message = "§c" + Lang.t("tools.not_container");
                 return;
             }
             message = SupplyManager.add(aimed) ? "§a" + Lang.t("tools.supply_added", aimed.toShortString()) : "§7" + Lang.t("tools.supply_exists");
         }));
-        addRenderableWidget(btn(Lang.t("tools.supply_remove"), x1, y, bw, () ->
-                message = SupplyManager.remove(aimed) ? "§a" + Lang.t("tools.supply_removed", aimed.toShortString()) : "§7" + Lang.t("tools.not_supply")));
+        addRenderableWidget(btn(Lang.t("tools.dump_add"), x0 + w3 + gap, y, w3, () -> {
+            if (!SupplyManager.isContainer(aimed)) {
+                message = "§c" + Lang.t("tools.not_container");
+                return;
+            }
+            message = SupplyManager.addDump(aimed) ? "§a" + Lang.t("tools.dump_added", aimed.toShortString()) : "§7" + Lang.t("tools.dump_exists");
+        }));
+        addRenderableWidget(btn(Lang.t("tools.supply_remove"), x0 + 2 * (w3 + gap), y, w3, () -> {
+            boolean a = SupplyManager.remove(aimed), b = SupplyManager.removeDump(aimed);
+            message = a || b ? "§a" + Lang.t("tools.supply_removed", aimed.toShortString()) : "§7" + Lang.t("tools.not_supply");
+        }));
         y += 24;
-        addRenderableWidget(btn(Lang.t("tools.supply_clear"), x0, y, bw, () -> {
+        addRenderableWidget(btn(Lang.t("tools.supply_clear"), x0, y, w3, () -> {
             SupplyManager.clear();
             message = "§a" + Lang.t("tools.cleared");
         }));
-        addRenderableWidget(btn(Lang.t("gui.back"), x1, y, bw, () -> minecraft.setScreen(parent)));
-        y += 24;
-        // 砍树、挖矿：关掉界面直接开始
-        addRenderableWidget(btn(Lang.t("tools.chop"), x0, y, bw, () -> {
-            onClose();
-            minecraft.player.connection.sendCommand("ab chop");
+        addRenderableWidget(btn(Lang.t("tools.dump_clear"), x0 + w3 + gap, y, w3, () -> {
+            SupplyManager.clearDumps();
+            message = "§a" + Lang.t("tools.cleared");
         }));
-        addRenderableWidget(btn(Lang.t("tools.mine"), x1, y, bw, () -> {
+        addRenderableWidget(btn(Lang.t("gui.back"), x0 + 2 * (w3 + gap), y, w3, () -> minecraft.setScreen(parent)));
+        y += 24;
+        // 砍树、挖矿、挖空选区：参数在专门的界面里调
+        addRenderableWidget(btn(Lang.t("tools.gather"), x0, y, w3 * 2 + gap, () -> minecraft.setScreen(new GatherScreen(this))));
+        // 诊断日志：遇到问题点一下，记下当时的现场
+        addRenderableWidget(btn(Lang.t("tools.log_mark"), x0 + 2 * (w3 + gap), y, w3, () -> {
             onClose();
-            minecraft.player.connection.sendCommand("ab mine");
+            minecraft.player.connection.sendCommand("ab log mark");
         }));
     }
 
@@ -133,6 +146,7 @@ public class ToolsScreen extends Screen {
         StringBuilder sb = new StringBuilder("§7" + Lang.t("tools.supply_count", sup.size()));
         for (int i = 0; i < Math.min(4, sup.size()); i++) sb.append("  ").append(sup.get(i).toShortString());
         if (sup.size() > 4) sb.append(" …");
+        sb.append("   ").append(Lang.t("tools.dump_count", SupplyManager.dumps().size()));
         g.drawCenteredString(font, sb.toString(), width / 2, height - 34, 0xFFFFFF);
         if (!message.isEmpty()) g.drawCenteredString(font, message, width / 2, height - 22, 0xFFFFFF);
     }

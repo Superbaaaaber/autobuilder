@@ -24,7 +24,7 @@ public final class HudOverlay {
     private static void render(GuiGraphics g, DeltaTracker dt) {
         Minecraft mc = Minecraft.getInstance();
         Placement pl = BuildController.placement();
-        if (pl == null || mc.options.hideGui || mc.player == null) return;
+        if (pl == null || mc.options.hideGui || mc.player == null || !com.autobuilder.ABConfig.SHOW_HUD.get()) return;
         List<String> lines = new ArrayList<>();
         String st = switch (BuildController.state()) {
             case IDLE -> "§7" + Lang.t("hud.idle");

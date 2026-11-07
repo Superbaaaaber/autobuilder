@@ -24,6 +24,7 @@ import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.commands.arguments.ResourceLocationArgument;
 import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
 import net.minecraft.commands.arguments.coordinates.Coordinates;
 import net.minecraft.core.BlockPos;
@@ -103,20 +104,50 @@ public final class ABCommands {
                 .then(Commands.literal("status").executes(c -> status()))
                 // /ab materials：材料清单，需要多少、背包里有多少、还缺多少
                 .then(Commands.literal("materials").executes(c -> materials()))
+                // /ab replace [蓝图里的方块] [换成的方块]：自定义材料替换；不写参数列出替换表和蓝图用到的方块，只写一个取消这一条，clear 全部取消
+                .then(Commands.literal("replace")
+                        .executes(c -> {
+                            if (BuildController.placement() == null) return err(Lang.t("msg.no_blueprint"));
+                            com.autobuilder.ClientEvents.openLater(new com.autobuilder.gui.ReplaceScreen(null, null));
+                            return 1;
+                        })
+                        .then(Commands.literal("list").executes(c -> replaceList()))
+                        .then(Commands.literal("clear").executes(c -> replaceClear()))
+                        .then(Commands.argument("from", ResourceLocationArgument.id())
+                                .suggests((c, b) -> SharedSuggestionProvider.suggestResource(blueprintBlockIds(), b))
+                                .executes(c -> replaceSet(ResourceLocationArgument.getId(c, "from"), null))
+                                .then(Commands.argument("to", ResourceLocationArgument.id())
+                                        .suggests((c, b) -> SharedSuggestionProvider.suggestResource(net.minecraft.core.registries.BuiltInRegistries.BLOCK.keySet(), b))
+                                        .executes(c -> replaceSet(ResourceLocationArgument.getId(c, "from"), ResourceLocationArgument.getId(c, "to"))))))
 
                 // ===== 砍树挖矿 =====
                 // /ab chop [半径]：以站的位置为中心砍附近的天然树
                 .then(Commands.literal("chop")
-                        .executes(c -> chop(24))
+                        .executes(c -> chop(com.autobuilder.ABConfig.CHOP_RADIUS.get()))
                         .then(Commands.argument("radius", IntegerArgumentType.integer(4, 64))
                                 .executes(c -> chop(IntegerArgumentType.getInteger(c, "radius")))))
+                // /ab ore [矿种] [半径]：按已加载区块里的矿直接挖过去（找矿）
+                .then(Commands.literal("ore")
+                        .executes(c -> ore("all", com.autobuilder.ABConfig.ORE_RADIUS.get()))
+                        .then(Commands.argument("kind", StringArgumentType.word())
+                                .suggests((c, b) -> SharedSuggestionProvider.suggest(com.autobuilder.build.Gather.ORE_KINDS, b))
+                                .executes(c -> ore(StringArgumentType.getString(c, "kind"), com.autobuilder.ABConfig.ORE_RADIUS.get()))
+                                .then(Commands.argument("radius", IntegerArgumentType.integer(4, 64))
+                                        .executes(c -> ore(StringArgumentType.getString(c, "kind"), IntegerArgumentType.getInteger(c, "radius"))))))
                 // /ab mine [主巷长度] [支巷长度]：在脚下高度往面朝方向挖支巷，挖露出来的矿
                 .then(Commands.literal("mine")
-                        .executes(c -> mine(48, 12))
+                        .executes(c -> mine(com.autobuilder.ABConfig.MINE_LENGTH.get(), com.autobuilder.ABConfig.MINE_BRANCH.get()))
                         .then(Commands.argument("length", IntegerArgumentType.integer(4, 256))
-                                .executes(c -> mine(IntegerArgumentType.getInteger(c, "length"), 12))
+                                .executes(c -> mine(IntegerArgumentType.getInteger(c, "length"), com.autobuilder.ABConfig.MINE_BRANCH.get()))
                                 .then(Commands.argument("branch", IntegerArgumentType.integer(0, 64))
                                         .executes(c -> mine(IntegerArgumentType.getInteger(c, "length"), IntegerArgumentType.getInteger(c, "branch"))))))
+
+                // /ab excavate [角1 角2]：把选区（或两个坐标之间）能挖的方块全挖掉，从上往下一层层挖
+                .then(Commands.literal("excavate")
+                        .executes(c -> excavate(Selection.pos1(), Selection.pos2()))
+                        .then(Commands.argument("from", BlockPosArgument.blockPos())
+                                .then(Commands.argument("to", BlockPosArgument.blockPos())
+                                        .executes(c -> excavate(pos(c, "from"), pos(c, "to"))))))
 
                 // ===== 保存建筑 =====
                 // /ab pos1 [坐标]、/ab pos2 [坐标]：设置选区的两个角，不写坐标就用准星对着的方块（没对着方块就用脚下）
@@ -159,10 +190,37 @@ public final class ABCommands {
                             return ok(Lang.t("cmd.supply_cleared"));
                         })))
 
+                // ===== 存放箱（砍树/挖矿/挖空时背包满了把挖到的东西存进去） =====
+                .then(Commands.literal("dump")
+                        .executes(c -> dumpList())
+                        // /ab dump add [坐标]：登记存放箱，不写坐标就用准星对着的箱子/木桶/潜影盒
+                        .then(Commands.literal("add")
+                                .executes(c -> dumpAdd(Selection.crosshairOrFeet()))
+                                .then(Commands.argument("pos", BlockPosArgument.blockPos()).executes(c -> dumpAdd(pos(c, "pos")))))
+                        .then(Commands.literal("remove")
+                                .executes(c -> dumpRemove(Selection.crosshairOrFeet()))
+                                .then(Commands.argument("pos", BlockPosArgument.blockPos()).executes(c -> dumpRemove(pos(c, "pos")))))
+                        .then(Commands.literal("list").executes(c -> dumpList()))
+                        .then(Commands.literal("clear").executes(c -> {
+                            SupplyManager.clearDumps();
+                            return ok(Lang.t("dump.cleared"));
+                        })))
+
+                // ===== 诊断日志 =====
+                // /ab log：日志文件在哪（点一下打开文件夹）；/ab log mark [说明]：在日志里打个标记并记一份现场快照；/ab log on|off
+                .then(Commands.literal("log")
+                        .executes(c -> logInfo())
+                        .then(Commands.literal("mark")
+                                .executes(c -> logMark(""))
+                                .then(Commands.argument("note", StringArgumentType.greedyString())
+                                        .executes(c -> logMark(StringArgumentType.getString(c, "note")))))
+                        .then(Commands.literal("on").executes(c -> logSwitch(true)))
+                        .then(Commands.literal("off").executes(c -> logSwitch(false))))
+
                 // ===== 界面 =====
                 // /ab menu：打开主界面（同 B 键）
                 .then(Commands.literal("menu").executes(c -> {
-                    Minecraft.getInstance().setScreen(new BuilderScreen());
+                    com.autobuilder.ClientEvents.openLater(new BuilderScreen());
                     return 1;
                 }))
                 // /ab config：打开设置界面
@@ -209,7 +267,8 @@ public final class ABCommands {
             new Help("pause", "/ab pause"),
             new Help("stop", "/ab stop"),
             new Help("status", "/ab status"),
-            new Help("materials", "/ab materials")
+            new Help("materials", "/ab materials"),
+            new Help("replace", "/ab replace ")
     ), List.of(
             "save",
             new Help("pos", "/ab pos1"),
@@ -221,15 +280,19 @@ public final class ABCommands {
             new Help("supplyadd", "/ab supply add"),
             new Help("supplyremove", "/ab supply remove"),
             new Help("supplylist", "/ab supply list"),
-            new Help("supplyclear", "/ab supply clear")
+            new Help("supplyclear", "/ab supply clear"),
+            new Help("dump", "/ab dump add")
     ), List.of(
             "gather",
             new Help("chop", "/ab chop "),
             new Help("mine", "/ab mine "),
+            new Help("ore", "/ab ore "),
+            new Help("excavate", "/ab excavate"),
             "ui",
             new Help("menu", "/ab menu"),
             new Help("config", "/ab config"),
-            new Help("hide", "/ab hide")
+            new Help("hide", "/ab hide"),
+            new Help("log", "/ab log mark ")
     ));
 
     private static int help() {
@@ -349,6 +412,84 @@ public final class ABCommands {
         return 1;
     }
 
+    // ---------------- 材料替换 ----------------
+
+    private static String blockName(net.minecraft.world.level.block.Block b) {
+        return b.getName().getString();
+    }
+
+    /** 当前蓝图用到的方块 id（给 /ab replace 的第一个参数补全） */
+    private static List<net.minecraft.resources.ResourceLocation> blueprintBlockIds() {
+        Placement p = BuildController.placement();
+        if (p == null) return List.of();
+        List<net.minecraft.resources.ResourceLocation> out = new java.util.ArrayList<>();
+        for (var b : p.blockCounts().keySet()) out.add(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(b));
+        return out;
+    }
+
+    private static int replaceList() {
+        Placement p = BuildController.placement();
+        if (p == null) return err(Lang.t("msg.no_blueprint"));
+        var player = Minecraft.getInstance().player;
+        var counts = p.blockCounts();
+        say("§6" + Lang.t("replace.title", p.bp.name));
+        if (p.replacements().isEmpty()) say("§7" + Lang.t("replace.none"));
+        for (var e : p.replacements().entrySet()) {
+            String to = e.getValue() == net.minecraft.world.level.block.Blocks.AIR ? Lang.t("replace.skip") : blockName(e.getValue());
+            say(" §e" + blockName(e.getKey()) + " §7→ §a" + to + " §7(" + counts.getOrDefault(e.getKey(), 0) + ")");
+        }
+        say("§6" + Lang.t("replace.blocks"));
+        int n = 0;
+        for (var e : counts.entrySet()) {
+            if (n++ >= 16) {
+                say("§7 " + Lang.t("replace.more", counts.size() - 16));
+                break;
+            }
+            String id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(e.getKey()).toString();
+            Style click = Style.EMPTY.withColor(ChatFormatting.YELLOW)
+                    .withClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND, "/ab replace " + id + " "))
+                    .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal(Lang.t("replace.click", blockName(e.getKey())))));
+            player.displayClientMessage(Component.literal(" " + blockName(e.getKey())).withStyle(click)
+                    .append(Component.literal(" §7" + id + " ×" + e.getValue())), false);
+        }
+        say("§7" + Lang.t("replace.usage"));
+        return 1;
+    }
+
+    private static int replaceClear() {
+        Placement p = BuildController.placement();
+        if (p == null) return err(Lang.t("msg.no_blueprint"));
+        p.clearReplace();
+        return ok(Lang.t("replace.cleared"));
+    }
+
+    private static int replaceSet(net.minecraft.resources.ResourceLocation fromId, net.minecraft.resources.ResourceLocation toId) {
+        Placement p = BuildController.placement();
+        if (p == null) return err(Lang.t("msg.no_blueprint"));
+        var reg = net.minecraft.core.registries.BuiltInRegistries.BLOCK;
+        var from = reg.getOptional(fromId).orElse(null);
+        if (from == null) return err(Lang.t("replace.unknown", fromId));
+        var counts = p.blockCounts();
+        Integer used = counts.get(from);
+        if (used == null) return err(Lang.t("replace.not_in_blueprint", blockName(from)));
+        if (toId == null) {
+            if (!p.replacements().containsKey(from)) return err(Lang.t("replace.not_replaced", blockName(from)));
+            p.setReplace(from, null);
+            return ok(Lang.t("replace.restored", blockName(from), used));
+        }
+        var to = reg.getOptional(toId).orElse(null);
+        if (to == null) return err(Lang.t("replace.unknown", toId));
+        if (to == net.minecraft.world.level.block.Blocks.AIR) {
+            p.setReplace(from, to);
+            return ok(Lang.t("replace.set_skip", blockName(from), used));
+        }
+        var st = to.defaultBlockState();
+        boolean fluid = to instanceof net.minecraft.world.level.block.LiquidBlock && com.autobuilder.build.StateMatcher.bucketFor(st) != null;
+        if (!fluid && com.autobuilder.build.StateMatcher.itemFor(st) == null) return err(Lang.t("replace.no_item", blockName(to)));
+        p.setReplace(from, to);
+        return ok(Lang.t("replace.set", blockName(from), blockName(to), used));
+    }
+
     private static int setPos(int which, BlockPos p) {
         Selection.set(which, p);
         return ok(Lang.t("msg.corner", which, p.toShortString(), Selection.describe()));
@@ -360,9 +501,24 @@ public final class ABCommands {
         return 1;
     }
 
+    private static int ore(String kind, int radius) {
+        if (!com.autobuilder.build.ServerPolicy.allowed()) return err(Lang.t("msg.server_disabled_token", com.autobuilder.build.ServerPolicy.TOKEN));
+        kind = kind.toLowerCase(java.util.Locale.ROOT);
+        if (!com.autobuilder.build.Gather.ORE_KINDS.contains(kind)) return err(Lang.t("gather.ore_bad_kind", String.join(" ", com.autobuilder.build.Gather.ORE_KINDS)));
+        com.autobuilder.build.Gather.startOre(kind, radius);
+        return 1;
+    }
+
     private static int mine(int length, int branch) {
         if (!com.autobuilder.build.ServerPolicy.allowed()) return err(Lang.t("msg.server_disabled_token", com.autobuilder.build.ServerPolicy.TOKEN));
         com.autobuilder.build.Gather.startMine(length, branch);
+        return 1;
+    }
+
+    private static int excavate(BlockPos a, BlockPos b) {
+        if (!com.autobuilder.build.ServerPolicy.allowed()) return err(Lang.t("msg.server_disabled_token", com.autobuilder.build.ServerPolicy.TOKEN));
+        if (a == null || b == null) return err(Lang.t("gather.excavate_need_sel"));
+        com.autobuilder.build.Gather.startExcavate(a, b);
         return 1;
     }
 
@@ -388,6 +544,52 @@ public final class ABCommands {
 
     private static int supplyRemove(BlockPos p) {
         return SupplyManager.remove(p) ? ok(Lang.t("cmd.supply_removed", p.toShortString())) : err(Lang.t("cmd.not_supply"));
+    }
+
+    private static int logInfo() {
+        var dir = com.autobuilder.Diag.dir();
+        var f = com.autobuilder.Diag.file();
+        say("§6" + Lang.t(com.autobuilder.ABConfig.DIAG_LOG.get() ? "log.on" : "log.off"));
+        say("§7" + (f == null ? Lang.t("log.no_file") : Lang.t("log.current", f.getFileName())));
+        Style click = Style.EMPTY.withColor(ChatFormatting.AQUA).withUnderlined(true)
+                .withClickEvent(new ClickEvent(ClickEvent.Action.OPEN_FILE, dir.toAbsolutePath().toString()))
+                .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal(dir.toAbsolutePath().toString())));
+        Minecraft.getInstance().player.displayClientMessage(Component.literal(Lang.t("log.open_dir")).withStyle(click), false);
+        say("§7" + Lang.t("log.usage"));
+        return 1;
+    }
+
+    private static int logMark(String note) {
+        if (!com.autobuilder.ABConfig.DIAG_LOG.get()) return err(Lang.t("log.off"));
+        com.autobuilder.Diag.mark(note);
+        var f = com.autobuilder.Diag.file();
+        return ok(Lang.t("log.marked", f == null ? "?" : f.getFileName()));
+    }
+
+    private static int logSwitch(boolean on) {
+        com.autobuilder.ABConfig.DIAG_LOG.set(on);
+        com.autobuilder.ABConfig.SPEC.save();
+        if (!on) com.autobuilder.Diag.close();
+        return ok(Lang.t(on ? "log.on" : "log.off"));
+    }
+
+    private static int dumpAdd(BlockPos p) {
+        if (!SupplyManager.isContainer(p)) return err(Lang.t("cmd.not_container", p.toShortString()));
+        if (!SupplyManager.addDump(p)) return err(Lang.t("dump.exists", p.toShortString()));
+        return ok(Lang.t("dump.added", p.toShortString(), SupplyManager.dumps().size())
+                + (SupplyManager.isRegistered(p) ? Lang.t("dump.also_supply") : ""));
+    }
+
+    private static int dumpRemove(BlockPos p) {
+        return SupplyManager.removeDump(p) ? ok(Lang.t("dump.removed", p.toShortString())) : err(Lang.t("dump.not_dump", p.toShortString()));
+    }
+
+    private static int dumpList() {
+        var l = SupplyManager.dumps();
+        say("§6" + Lang.t("dump.title", l.size()));
+        if (l.isEmpty()) say("§7" + Lang.t("dump.none"));
+        for (var p : l) say(" §f" + p.toShortString());
+        return 1;
     }
 
     private static int supplyList() {

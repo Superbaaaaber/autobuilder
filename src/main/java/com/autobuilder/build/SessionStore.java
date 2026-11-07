@@ -67,6 +67,14 @@ public final class SessionStore {
         JsonArray sc = new JsonArray();
         for (BlockPos p : scaffold) sc.add(p.asLong());
         o.add("scaffold", sc);
+        if (!pl.replacements().isEmpty()) {
+            JsonObject rep = new JsonObject();
+            for (var e : pl.replacements().entrySet()) {
+                rep.addProperty(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(e.getKey()).toString(),
+                        net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(e.getValue()).toString());
+            }
+            o.add("replace", rep);
+        }
         root.add(key, o);
         writeRoot(root);
     }
@@ -91,6 +99,13 @@ public final class SessionStore {
             pl.setMirror(Mirror.valueOf(o.get("mirror").getAsString()));
             pl.setOrigin(new BlockPos(a.get(0).getAsInt(), a.get(1).getAsInt(), a.get(2).getAsInt()));
             if (o.has("scaffold")) for (var e : o.getAsJsonArray("scaffold")) scaffoldOut.add(BlockPos.of(e.getAsLong()));
+            if (o.has("replace")) {
+                for (var e : o.getAsJsonObject("replace").entrySet()) {
+                    var from = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getOptional(net.minecraft.resources.ResourceLocation.tryParse(e.getKey()));
+                    var to = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getOptional(net.minecraft.resources.ResourceLocation.tryParse(e.getValue().getAsString()));
+                    if (from.isPresent() && to.isPresent()) pl.setReplace(from.get(), to.get());
+                }
+            }
             return pl;
         } catch (Exception e) {
             AutoBuilder.LOG.warn("恢复断点失败", e);

@@ -27,6 +27,8 @@ import net.minecraft.world.item.Item;
 public final class SupplyManager {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Set<BlockPos> CONTAINERS = new LinkedHashSet<>();
+    /** 存放箱：砍树/挖矿/挖空时背包满了把挖到的东西存进去（和材料箱分开登记，存在“世界键|dump”下） */
+    private static final Set<BlockPos> DUMPS = new LinkedHashSet<>();
     /** 上次打开时看到的内容 */
     private static final Map<BlockPos, Map<Item, Integer>> SEEN = new HashMap<>();
     private static String loadedKey;
@@ -56,15 +58,14 @@ public final class SupplyManager {
         if (k.equals(loadedKey)) return;
         loadedKey = k;
         CONTAINERS.clear();
+        DUMPS.clear();
         SEEN.clear();
         try {
             if (!Files.exists(file())) return;
             JsonObject root = GSON.fromJson(Files.readString(file(), StandardCharsets.UTF_8), JsonObject.class);
-            if (root == null || !root.has(k)) return;
-            for (var e : root.getAsJsonArray(k)) {
-                JsonArray a = e.getAsJsonArray();
-                CONTAINERS.add(new BlockPos(a.get(0).getAsInt(), a.get(1).getAsInt(), a.get(2).getAsInt()));
-            }
+            if (root == null) return;
+            readList(root, k, CONTAINERS);
+            readList(root, k + "|dump", DUMPS);
         } catch (Exception ex) {
             AutoBuilder.LOG.warn("读取材料箱列表失败", ex);
         }
@@ -75,19 +76,70 @@ public final class SupplyManager {
             JsonObject root = Files.exists(file())
                     ? GSON.fromJson(Files.readString(file(), StandardCharsets.UTF_8), JsonObject.class) : new JsonObject();
             if (root == null) root = new JsonObject();
-            JsonArray arr = new JsonArray();
-            for (BlockPos p : CONTAINERS) {
-                JsonArray a = new JsonArray();
-                a.add(p.getX());
-                a.add(p.getY());
-                a.add(p.getZ());
-                arr.add(a);
-            }
-            root.add(key(), arr);
+            root.add(key(), toJson(CONTAINERS));
+            if (DUMPS.isEmpty()) root.remove(key() + "|dump");
+            else root.add(key() + "|dump", toJson(DUMPS));
             Files.writeString(file(), GSON.toJson(root), StandardCharsets.UTF_8);
         } catch (Exception ex) {
             AutoBuilder.LOG.warn("保存材料箱列表失败", ex);
         }
+    }
+
+    private static void readList(JsonObject root, String k, Set<BlockPos> out) {
+        if (!root.has(k)) return;
+        for (var e : root.getAsJsonArray(k)) {
+            JsonArray a = e.getAsJsonArray();
+            out.add(new BlockPos(a.get(0).getAsInt(), a.get(1).getAsInt(), a.get(2).getAsInt()));
+        }
+    }
+
+    private static JsonArray toJson(Set<BlockPos> set) {
+        JsonArray arr = new JsonArray();
+        for (BlockPos p : set) {
+            JsonArray a = new JsonArray();
+            a.add(p.getX());
+            a.add(p.getY());
+            a.add(p.getZ());
+            arr.add(a);
+        }
+        return arr;
+    }
+
+    // ---------------- 存放箱 ----------------
+
+    public static boolean addDump(BlockPos pos) {
+        ensureLoaded();
+        boolean added = DUMPS.add(pos.immutable());
+        save();
+        return added;
+    }
+
+    public static boolean removeDump(BlockPos pos) {
+        ensureLoaded();
+        boolean r = DUMPS.remove(pos);
+        save();
+        return r;
+    }
+
+    public static void clearDumps() {
+        ensureLoaded();
+        DUMPS.clear();
+        save();
+    }
+
+    public static List<BlockPos> dumps() {
+        ensureLoaded();
+        return new ArrayList<>(DUMPS);
+    }
+
+    public static boolean anyDump() {
+        ensureLoaded();
+        return !DUMPS.isEmpty();
+    }
+
+    public static boolean isDump(BlockPos pos) {
+        ensureLoaded();
+        return DUMPS.contains(pos);
     }
 
     public static boolean isContainer(BlockPos pos) {
@@ -157,6 +209,59 @@ public final class SupplyManager {
             }
         }
         return out;
+    }
+
+    /** 登记的材料箱里上次看到的这种物品总数（没打开过的不算） */
+    public static int supplyCount(Item item) {
+        ensureLoaded();
+        int n = 0;
+        for (BlockPos c : CONTAINERS) {
+            Map<Item, Integer> m = SEEN.get(c);
+            if (m != null) n += m.getOrDefault(item, 0);
+        }
+        return n;
+    }
+
+    /** 登记了但还不知道里面有什么的材料箱个数 */
+    public static int unknownSupplies() {
+        ensureLoaded();
+        int n = 0;
+        for (BlockPos c : CONTAINERS) if (!SEEN.containsKey(c)) n++;
+        return n;
+    }
+
+    /** 玩家最近右键的方块：打开容器时靠它知道开的是哪个箱子 */
+    private static BlockPos lastClicked;
+    private static int lastClickedTick;
+    private static int boundMenu = -1;
+    private static BlockPos boundPos;
+
+    public static void clicked(BlockPos pos) {
+        lastClicked = pos.immutable();
+        lastClickedTick = BuildController.now();
+    }
+
+    /** 每 tick：开着登记过的材料箱/存放箱时记下里面有什么（玩家自己打开的也算，/ab materials 要用） */
+    public static void watchOpen(Minecraft mc) {
+        var p = mc.player;
+        if (p == null) return;
+        if (p.containerMenu == p.inventoryMenu) {
+            boundMenu = -1;
+            return;
+        }
+        int id = p.containerMenu.containerId;
+        if (id != boundMenu) {
+            boundMenu = id;
+            boundPos = lastClicked != null && BuildController.now() - lastClickedTick <= 20 ? lastClicked : null;
+        }
+        if (boundPos == null || BuildController.now() % 5 != 0) return;
+        if (!isRegistered(boundPos) && !isDump(boundPos)) return;
+        Map<Item, Integer> m = new HashMap<>();
+        for (var s : p.containerMenu.slots) {
+            if (s.container == p.getInventory() || !s.hasItem()) continue;
+            m.merge(s.getItem().getItem(), s.getItem().getCount(), Integer::sum);
+        }
+        SEEN.put(boundPos, m);
     }
 
     /** 上次看到时有多少这种物品或它的同类代替品；没打开过返回 -1 */

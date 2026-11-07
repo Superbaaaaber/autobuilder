@@ -34,6 +34,11 @@ public final class PathExecutor {
     private boolean control;
     private float forward, strafe;
     private boolean jump;
+    /** 这一步走到现在离节点最近的“还差多少”，长时间没变小就是原地打转（比如原地反复跳） */
+    private double bestProg = Double.MAX_VALUE;
+    private int walkTicks, progTick;
+    /** 平路上冲刺 */
+    private boolean sprint;
 
     public void setPath(List<PathFinder.Step> p, BlockPos goal) {
         this.path = p;
@@ -44,6 +49,15 @@ public final class PathExecutor {
         this.stepTicks = 0;
         this.stuckTicks = 0;
         this.failed = false;
+        this.bestProg = Double.MAX_VALUE;
+        this.walkTicks = 0;
+        this.progTick = 0;
+    }
+
+    /** 剩下还没走的步骤（诊断日志用） */
+    public List<PathFinder.Step> remainingSteps() {
+        if (path == null || idx >= path.size()) return List.of();
+        return List.copyOf(path.subList(idx, path.size()));
     }
 
     public boolean hasPath() {
@@ -58,6 +72,22 @@ public final class PathExecutor {
             PathFinder.Step s = path.get(i);
             if (s.place() != null) out.add(s.place());
             out.add(BlockPos.containing(s.pos().getX(), s.standY() - 0.01, s.pos().getZ()));
+        }
+        return out;
+    }
+
+    /**
+     * 当前路线接下来要穿过的格子：要挖开的，和每个落脚点人身占的两格。
+     * 建造时不能往这些格子里放方块：挖开的建筑方块马上又被填回去，路又被堵上，会一直挖了填、填了挖。
+     */
+    public java.util.Set<BlockPos> passage() {
+        java.util.Set<BlockPos> out = new java.util.HashSet<>();
+        if (!hasPath()) return out;
+        for (int i = idx; i < path.size(); i++) {
+            PathFinder.Step s = path.get(i);
+            if (s.mine() != null) out.addAll(s.mine());
+            int y0 = (int) Math.floor(s.standY() + 0.01), y1 = (int) Math.floor(s.standY() + 1.79);
+            for (int y = y0; y <= y1; y++) out.add(new BlockPos(s.pos().getX(), y, s.pos().getZ()));
         }
         return out;
     }
@@ -96,6 +126,7 @@ public final class PathExecutor {
         control = true;
         forward = strafe = 0;
         jump = false;
+        sprint = false;
     }
 
     public void release() {
@@ -112,12 +143,11 @@ public final class PathExecutor {
             PathFinder.Step s = path.get(idx);
             BlockPos from = stepFrom();
             if (from != null) failedMove = PathFinder.moveKey(from, s.pos());
-            if (BuildController.debug) {
-                var p = net.minecraft.client.Minecraft.getInstance().player;
-                com.autobuilder.AutoBuilder.LOG.info("[AB] 走不通（{}）第 {}/{} 步 {} {}→{} 人在 {}", why, idx + 1, path.size(), s.move(),
-                        from == null ? "?" : from.toShortString(), s.pos().toShortString(),
-                        p == null ? "?" : String.format("%.2f,%.2f,%.2f", p.getX(), p.getY(), p.getZ()));
-            }
+            var p = net.minecraft.client.Minecraft.getInstance().player;
+            com.autobuilder.Diag.log("走不通（{}）第 {}/{} 步 {} {}→{} 人在 {}{}", why, idx + 1, path.size(), s.move(),
+                    from == null ? "?" : from.toShortString(), s.pos().toShortString(),
+                    p == null ? "?" : String.format("%.2f,%.2f,%.2f", p.getX(), p.getY(), p.getZ()),
+                    p == null ? "" : (p.onGround() ? " 着地" : " 悬空") + (p.isInWater() ? " 在水里" : ""));
         }
         path = null;
         failed = true;
@@ -127,6 +157,9 @@ public final class PathExecutor {
         idx++;
         stepTicks = 0;
         stuckTicks = 0;
+        bestProg = Double.MAX_VALUE;
+        walkTicks = 0;
+        progTick = 0;
     }
 
     /** 路线上接下来几个节点是否还走得通（可能刚被自己放的方块堵住了） */
@@ -171,7 +204,7 @@ public final class PathExecutor {
                         // 还没走到能挖的位置，先往节点方向靠
                         break;
                     }
-                    if (!BuildController.breaker().active()) BuildController.breaker().start(m);
+                    if (!BuildController.breaker().active()) BuildController.pathDig(m);
                     stepTicks = Math.min(stepTicks, 150);
                     return;
                 }
@@ -242,9 +275,33 @@ public final class PathExecutor {
             fail("偏离路线");
             return;
         }
+        // 有没有在靠近节点：水平距离 + 还要往上爬的高度。原地跳的时候位置一直在变，但这个数不会变小
+        walkTicks++;
+        double prog = dist + Math.max(0, s.standY() - p.getY());
+        if (prog < bestProg - 0.05) {
+            bestProg = prog;
+            progTick = walkTicks;
+        } else if (walkTicks - progTick > 40) {
+            fail("原地打转");
+            return;
+        }
         float speed = dist < 0.6 ? 0.4f : 1.0f;
         moveToward(p, dx, dz, speed);
-        if ((s.move() == PathFinder.Move.ASCEND || s.standY() - p.getY() > 0.6) && p.onGround() && dist < 1.5) {
+        // 平路、下一步也是平路、方向和视角差不多（原版要“往前”才能冲刺）：冲刺，快三成
+        boolean flat = s.move() == PathFinder.Move.WALK || s.move() == PathFinder.Move.FALL;
+        if (flat && idx + 1 < path.size()) {
+            PathFinder.Move nm = path.get(idx + 1).move();
+            flat = nm == PathFinder.Move.WALK || nm == PathFinder.Move.FALL;
+        }
+        sprint = flat && !last && dist > 0.8 && forward > 0.5f && p.getFoodData().getFoodLevel() > 6;
+        boolean up = s.move() == PathFinder.Move.ASCEND || s.standY() - p.getY() > 0.6;
+        if (up && p.isInWater() && dist < 1.5) {
+            // 水里上岸：原版在水里按空格是慢慢往上浮，不是起跳。要一直按着、同时顶着岸往前走，
+            // 撞到岸边时才会被往上送一把。原来只在“站在地上”时按一下，一浮起来就松开，沉回去再按，永远上不去
+            moveToward(p, dx, dz, 1.0f);
+            sprint = false;
+            jump = true;
+        } else if (up && p.onGround() && dist < 1.5) {
             // 起跳前先站到正对台阶的位置：歪着跳，头会撞到旁边格子上方的方块，原地反复跳
             BlockPos from = stepFrom();
             double lat = 0, ux = 0, uz = 0;
@@ -267,7 +324,7 @@ public final class PathExecutor {
         // 卡住检测
         if (p.position().distanceToSqr(lastPos) < 0.0004) {
             stuckTicks++;
-            if (stuckTicks > 15 && p.onGround()) jump = true;
+            if (stuckTicks > 15 && (p.onGround() || p.isInWater())) jump = true;
             if (stuckTicks > 40) fail("卡住");
         } else {
             stuckTicks = 0;
@@ -310,5 +367,7 @@ public final class PathExecutor {
         input.right = strafe < -0.1f;
         input.jumping = jump;
         input.shiftKeyDown = false;
+        var pl = Minecraft.getInstance().player;
+        if (pl != null && pl.isSprinting() != sprint) pl.setSprinting(sprint);
     }
 }

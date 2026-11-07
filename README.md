@@ -25,7 +25,11 @@ A client-side NeoForge mod for Minecraft 1.21.1 that makes **your own player** b
 - **Safety**: auto-eats, stops to regenerate on low health and then continues, surfaces when under water, escapes lava, pauses as soon as you press a movement key.
 - **Preview**: translucent ghost blocks and outlines for blocks to break. Press H to hide it while it keeps building.
 - **Material substitution**: uses another wood type or colour of the same block when one runs out (configurable).
-- **Gathering**: `/ab chop` chops nearby natural trees and replants; `/ab mine` branch-mines in the direction you face and mines the ores the tunnels expose.
+- **Gathering**: `/ab chop` chops nearby natural trees and replants; `/ab mine` branch-mines in the direction you face and mines the ores the tunnels expose; `/ab ore [type]` digs straight to ores in loaded chunks (X-ray style; check server rules on multiplayer); `/ab excavate` digs out a selection from the top down. All four are also on the *Chop & mine* screen with sliders for their settings. With dump chests registered, it stores what it gathered when the inventory fills up.
+- **Replace blocks**: build a schematic with one block swapped for any other (e.g. a mob farm's iron blocks as cobblestone). Pick both blocks on the *Replace blocks* screen, searchable by name; same-shape blocks and what you carry come first.
+- **Materials screen**: what each material still needs, how many you carry, how many are in supply chests and how many are missing.
+- **Blocks water flowing in**: when a lake or stream flows into the build area, it blocks it just outside the edge and drains the inside.
+- **Diagnostic log**: every job is logged to `autobuild/logs/` with snapshots when it gets stuck; `/ab log mark` marks a problem.
 
 ## Usage
 
@@ -42,6 +46,9 @@ Type `/ab help` in chat for the full command list (hover over a command for deta
 | H | Hide / show preview (keeps building) |
 | `[` / `]` | Selection corner 1 / 2 (block under crosshair) |
 | Stick: left / right click | Selection corner 1 / 2 (up to 128 blocks away) |
+| Stick: Shift + right click | Menu for what you look at: supply/dump chest, replace that blueprint block, move/rotate the blueprint, start/pause, excavate or save the selection |
+| Stick: Shift + left click | Move the blueprint to where you look |
+| Stick: Shift + scroll | Nudge the blueprint one block along your facing (up/down when looking up or down) |
 
 Settings: *Settings…* button on the main screen, `/ab config`, or Mods → AutoBuilder → Config.
 
@@ -93,7 +100,11 @@ Minecraft 1.21.1 NeoForge **纯客户端** mod：在生存模式下让玩家自�
 - **脚手架**：用泥土、圆石等便宜方块垫柱子、搭桥，完工后从上往下拆掉；不会把自己封在建筑里。
 - **材料箱**：登记箱子、木桶或潜影盒，缺料时自动走过去存杂物、取材料；没登记的附近箱子也会去翻（只拿不放）。
 - **同类材料替换**：缺某种木头就用别的木头的同款，缺某种颜色（床、羊毛、玻璃、混凝土……）就用别的颜色，设置里可以关。
-- **砍树挖矿**：`/ab chop` 砍附近的天然树并补种；`/ab mine` 往面朝方向挖支巷，挖巷道里露出来的矿。
+- **砍树挖矿**：`/ab chop` 砍附近的天然树并补种；`/ab mine` 往面朝方向挖支巷，挖巷道里露出来的矿；`/ab ore [矿种]` 按已加载区块里的矿直接挖过去（相当于矿物透视，多人服务器上先看规则）；`/ab excavate` 把选区从上往下挖空。这四个在「砍树挖矿」界面里都能用滑块调参数。登记了存放箱的话，背包快满时会把挖到的东西存进去。
+- **材料替换**：把蓝图里的一种方块换成任意方块再建，比如刷怪塔的铁块换成圆石。在「材料替换」界面点选就行，能搜中文名，同类形状、背包里有的排在前面。
+- **材料清单**：每种材料还要多少、背包有多少、材料箱有多少、还缺多少。
+- **挡水**：湖、溪流从边上流进建造区时，在边界外垫方块挡住，再把里面的水抽干。
+- **诊断日志**：每次建造、砍树挖矿都会写日志到 `autobuild/logs/`，卡住时自动记现场；遇到问题输入 `/ab log mark` 打个标记。
 - **断点续建**：进度按世界和维度保存，掉线或重启后按 N 接着建。
 - **保存建筑**：选两个角（或者拿木棍左键/右键点）就能把任何建筑存成 `.nbt` 蓝图，周围的湖水自动不存。
 - **水**：建筑里面的水自动抽干（填方块再收回），泡了水的方块用空桶舀掉，能在水面上搭桥，不会在水里干活。
@@ -107,7 +118,9 @@ Minecraft 1.21.1 NeoForge **纯客户端** mod：在生存模式下让玩家自�
 2. 按 **B** 打开主界面，选蓝图，点「加载到面前」，用旋转、镜像、移动把预览摆到想要的位置。
 3. 材料放进背包（或登记材料箱），按 **N** 开始。再按 N 或按任意移动键暂停。
 
-快捷键：**B** 主界面，**N** 开始/暂停，**H** 隐藏/显示投影，**[ ]** 选区角；手拿木棍左键/右键也能设选区角。
+快捷键：**B** 主界面，**N** 开始/暂停，**H** 隐藏/显示投影，**[ ]** 选区角。
+
+手拿木棍：左键/右键设选区角；**Shift+右键**打开快捷菜单（对着箱子设材料箱/存放箱，对着蓝图里的方块直接替换，还有挪蓝图、旋转、开始/暂停、挖空和保存选区）；**Shift+左键**把蓝图挪到对着的地方；**Shift+滚轮**沿面朝方向平移蓝图（抬头/低头时上下移）。
 
 聊天栏输入 `/ab help` 查看全部指令（鼠标悬停看说明，点击填进聊天栏）。设置：主界面右上角「设置…」、`/ab config`，或 模组 → AutoBuilder → 配置。
 

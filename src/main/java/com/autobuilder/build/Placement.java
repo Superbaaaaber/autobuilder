@@ -5,6 +5,8 @@ import com.autobuilder.blueprint.Blueprint;
 import java.util.List;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.Mirror;
 import net.minecraft.world.level.block.Rotation;
 import net.minecraft.world.level.block.state.BlockState;
@@ -23,6 +25,13 @@ public final class Placement {
     private int version; // 每次变换 +1，扫描器据此重置
     /** 砍树/挖矿临时生成的蓝图：不存断点、不提示“建造完成”、空气位置一律清掉 */
     public boolean temporary;
+    /** 挖空选区：从上往下一层层挖，身边只挖还要挖的最高两层（不在脚边挖出深坑） */
+    public boolean layered;
+    /**
+     * 自定义材料替换：蓝图里的方块 → 实际要建的方块（比如刷怪塔的铁块换成圆石）。
+     * 换成空气表示这种方块不建。朝向、上下半这类两边都有的属性照搬（橡木楼梯换石砖楼梯朝向不变）。
+     */
+    private final java.util.Map<Block, Block> replace = new java.util.LinkedHashMap<>();
 
     public Placement(Blueprint bp, BlockPos origin) {
         this.bp = bp;
@@ -100,9 +109,52 @@ public final class Placement {
         List<BlockState> src = bp.palette();
         palette = new BlockState[src.size()];
         for (int i = 0; i < palette.length; i++) {
-            palette[i] = src.get(i).mirror(mirror).rotate(rotation);
+            BlockState st = src.get(i).mirror(mirror).rotate(rotation);
+            Block to = replace.get(st.getBlock());
+            palette[i] = to == null ? st : replaced(st, to);
         }
         version++;
+    }
+
+    /** 换成另一种方块，两边都有的属性照搬；换成空气返回 null（不建） */
+    public static BlockState replaced(BlockState s, Block to) {
+        return to == Blocks.AIR ? null : to.withPropertiesOf(s);
+    }
+
+    public java.util.Map<Block, Block> replacements() {
+        return java.util.Collections.unmodifiableMap(replace);
+    }
+
+    /** from 换成 to；to 为 null 或者就是 from 时取消这一条 */
+    public void setReplace(Block from, Block to) {
+        if (to == null || to == from) replace.remove(from);
+        else replace.put(from, to);
+        rebuildPalette();
+    }
+
+    public void clearReplace() {
+        replace.clear();
+        rebuildPalette();
+    }
+
+    /** 蓝图里每种方块用了几格（替换前，不算空气），按用量从多到少 */
+    public java.util.LinkedHashMap<Block, Integer> blockCounts() {
+        List<BlockState> src = bp.palette();
+        int[] per = new int[src.size()];
+        int vol = bp.sx * bp.sy * bp.sz;
+        for (int i = 0; i < vol; i++) {
+            int id = bp.rawAt(i);
+            if (id >= 0) per[id]++;
+        }
+        java.util.Map<Block, Integer> m = new java.util.HashMap<>();
+        for (int i = 0; i < per.length; i++) {
+            BlockState st = src.get(i);
+            if (per[i] == 0 || st.isAir() || com.autobuilder.build.StateMatcher.isSecondaryPart(st)) continue;
+            m.merge(st.getBlock(), per[i], Integer::sum);
+        }
+        java.util.LinkedHashMap<Block, Integer> out = new java.util.LinkedHashMap<>();
+        m.entrySet().stream().sorted((a, b) -> b.getValue() - a.getValue()).forEach(e -> out.put(e.getKey(), e.getValue()));
+        return out;
     }
 
     /** 蓝图内部坐标 → 世界坐标 */
@@ -118,6 +170,23 @@ public final class Placement {
             default -> { rx = mx; rz = mz; }
         }
         return new BlockPos(origin.getX() + rx, origin.getY() + y, origin.getZ() + rz);
+    }
+
+    /** 世界坐标处蓝图原本的方块（替换前）；范围外或“不关心”返回 null */
+    public BlockState originalAt(BlockPos p) {
+        int rx = p.getX() - origin.getX(), y = p.getY() - origin.getY(), rz = p.getZ() - origin.getZ();
+        if (rx < 0 || y < 0 || rz < 0 || rx >= sizeX() || y >= sizeY() || rz >= sizeZ()) return null;
+        int mx, mz;
+        switch (rotation) {
+            case CLOCKWISE_90 -> { mz = bp.sz - 1 - rx; mx = rz; }
+            case CLOCKWISE_180 -> { mx = bp.sx - 1 - rx; mz = bp.sz - 1 - rz; }
+            case COUNTERCLOCKWISE_90 -> { mz = rx; mx = bp.sx - 1 - rz; }
+            default -> { mx = rx; mz = rz; }
+        }
+        int x = mirror == Mirror.FRONT_BACK ? bp.sx - 1 - mx : mx;
+        int z = mirror == Mirror.LEFT_RIGHT ? bp.sz - 1 - mz : mz;
+        int id = bp.rawAt(bp.index(x, y, z));
+        return id < 0 ? null : bp.palette().get(id);
     }
 
     /** 世界坐标处应有的方块（已旋转/镜像）；范围外或“不关心”返回 null */

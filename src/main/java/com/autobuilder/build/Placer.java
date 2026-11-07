@@ -284,10 +284,10 @@ public final class Placer {
             p.xRotO = pitchO;
         }
         if (r.shouldSwing()) p.swing(InteractionHand.MAIN_HAND);
+        com.autobuilder.Diag.log("放 {} yaw={} pitch={} face={} hit={} clicked={} 结果={} r={}", a.pos.toShortString(),
+                a.yaw, a.pitch, a.hit.getDirection(), a.hit.getLocation(), a.hit.getBlockPos().toShortString(),
+                mc.level.getBlockState(a.pos), r);
         if (BuildController.debug) {
-            com.autobuilder.AutoBuilder.LOG.info("[AB] 放 {} yaw={} pitch={} face={} hit={} clicked={} 结果={} r={}", a.pos.toShortString(),
-                    a.yaw, a.pitch, a.hit.getDirection(), a.hit.getLocation(), a.hit.getBlockPos().toShortString(),
-                    mc.level.getBlockState(a.pos), r);
             DEBUG_LOG.add(new Object[] {a.pos, mc.level.getBlockState(a.pos), a.yaw, a.pitch, 0});
         }
         return r.consumesAction() ? Result.PLACED : Result.FAILED;

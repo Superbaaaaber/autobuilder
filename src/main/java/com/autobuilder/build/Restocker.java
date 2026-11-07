@@ -27,6 +27,7 @@ import net.minecraft.world.phys.Vec3;
 /**
  * 去材料箱补货：走过去 → 右键打开（不弹界面）→ 背包满就先存杂物 → Shift 点击取需要的 → 关箱。
  * 一轮里每个箱子最多去一次；一轮下来什么都没拿到就交给上层暂停报缺料。
+ * 另一种模式是去存放箱存东西（砍树/挖矿/挖空时背包满了）：走法、开箱一样，箱子里改成 Shift 点击背包里的东西放进去。
  */
 public final class Restocker {
     private enum Stage { GO, OPEN, WAIT_OPEN, TRANSFER }
@@ -36,11 +37,23 @@ public final class Restocker {
     private static int stageTicks;
     private static int totalTicks;
     private static final Set<BlockPos> TRIED = new HashSet<>();
+    /** 走不到的容器（地下地牢之类）：位置 → 到期时间。五分钟内不再去试，免得每次补货都重新寻路 */
+    private static final Map<BlockPos, Integer> UNREACHABLE = new HashMap<>();
     private static final Map<Item, Integer> WANT = new HashMap<>();
     private static boolean gotSomething;
     /** 上一轮一无所获的时间，之后一段时间内不再白跑 */
     private static int idleUntil;
-    private static int clock;
+    /** 存东西模式：每种物品至少留在背包里多少（Integer.MAX_VALUE = 一个都不存），这一轮存了几组 */
+    private static boolean depositing;
+    private static final Map<Item, Integer> KEEP = new HashMap<>();
+    private static int deposited;
+    /** 存放箱都满了或者走不到：到这个时间之前不再去存（改回扔杂物） */
+    private static int depositBlockedUntil;
+
+    /** 用 BuildController 的 tick 计时（原来自己的计数只在补货时走，过期时间实际上永远到不了） */
+    private static int clock() {
+        return BuildController.now();
+    }
 
     private Restocker() {}
 
@@ -55,6 +68,11 @@ public final class Restocker {
 
     public static String describe() {
         if (stage == null) return "";
+        if (depositing) return switch (stage) {
+            case GO -> Lang.t("act.deposit_go", target.toShortString());
+            case OPEN, WAIT_OPEN -> Lang.t("act.deposit_open");
+            case TRANSFER -> Lang.t("act.deposit_put");
+        };
         return switch (stage) {
             case GO -> Lang.t("act.restock_go", target.toShortString());
             case OPEN, WAIT_OPEN -> Lang.t("act.restock_open");
@@ -67,7 +85,143 @@ public final class Restocker {
             if (mc.player != null && mc.player.containerMenu != mc.player.inventoryMenu) mc.player.closeContainer();
         }
         stage = null;
+        depositing = false;
         TRIED.clear();
+    }
+
+    // ---------------- 存东西 ----------------
+
+    /** 现在能不能去存放箱存东西（登记了存放箱，而且最近没有因为都满了/走不到而放弃） */
+    public static boolean depositUsable() {
+        return SupplyManager.anyDump() && clock() >= depositBlockedUntil;
+    }
+
+    /** 存放箱都满了或者走不到：五分钟内不再去 */
+    public static void blockDeposit() {
+        depositBlockedUntil = clock() + 6000;
+    }
+
+    public static boolean depositing() {
+        return stage != null && depositing;
+    }
+
+    /** 上一轮存了几组 */
+    public static int lastDeposited() {
+        return deposited;
+    }
+
+    private static Map<Item, Integer> counts(LocalPlayer p) {
+        Map<Item, Integer> m = new HashMap<>();
+        for (int i = 0; i < 36; i++) {
+            ItemStack s = p.getInventory().getItem(i);
+            if (!s.isEmpty()) m.merge(s.getItem(), s.getCount(), Integer::sum);
+        }
+        return m;
+    }
+
+    /** 这一组放进去以后，背包里这种物品还不少于要留的数量 */
+    private static boolean canDeposit(Map<Item, Integer> have, ItemStack s) {
+        int keep = KEEP.getOrDefault(s.getItem(), 0);
+        if (keep == Integer.MAX_VALUE) return false;
+        return have.getOrDefault(s.getItem(), 0) - s.getCount() >= keep;
+    }
+
+    private static boolean hasDeposit(LocalPlayer p) {
+        Map<Item, Integer> have = counts(p);
+        for (int i = 0; i < 36; i++) {
+            ItemStack s = p.getInventory().getItem(i);
+            if (!s.isEmpty() && canDeposit(have, s)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 去存放箱存东西。keep：每种物品至少留多少（不在表里的全存，Integer.MAX_VALUE 表示不存）。
+     * 出发了返回 true；没有存放箱、没东西可存、箱子都去不了返回 false。
+     */
+    public static boolean startDeposit(Minecraft mc, Map<Item, Integer> keep) {
+        if (stage != null || !SupplyManager.anyDump() || mc.player == null) return false;
+        KEEP.clear();
+        KEEP.putAll(keep);
+        if (!hasDeposit(mc.player)) return false;
+        depositing = true;
+        TRIED.clear();
+        deposited = 0;
+        com.autobuilder.Diag.note("背包快满了 / 收工，去存放箱存东西");
+        totalTicks = 0;
+        BuildController.breaker().cancel(mc);
+        if (goNextDump(mc)) return true;
+        depositing = false;
+        return false;
+    }
+
+    /** 去最近的、这一轮还没去过的存放箱 */
+    private static boolean goNextDump(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        UNREACHABLE.entrySet().removeIf(e -> e.getValue() <= clock());
+        List<BlockPos> order = new ArrayList<>();
+        for (BlockPos c : SupplyManager.dumps()) {
+            if (TRIED.contains(c) || UNREACHABLE.containsKey(c) || !SupplyManager.isContainer(c)) continue;
+            order.add(c);
+        }
+        order.sort((a, b) -> Double.compare(a.distToCenterSqr(p.position()), b.distToCenterSqr(p.position())));
+        for (BlockPos c : order) {
+            if (Geometry.distToBlock(p.getEyePosition(), c) <= BuildController.reach() - 0.2) {
+                target = c;
+                stage = Stage.OPEN;
+                stageTicks = 0;
+                return true;
+            }
+            List<PathFinder.Step> path = pathTo(c);
+            if (path == null) {
+                unreachable(c);
+                continue;
+            }
+            target = c;
+            stage = Stage.GO;
+            stageTicks = 0;
+            BuildController.walker().setPath(path, c);
+            return true;
+        }
+        stage = null;
+        if (deposited == 0) {
+            // 一组都没存进去：箱子都满了或者都走不到，先改回扔杂物
+            blockDeposit();
+            BuildController.msg(Lang.t("deposit.blocked"), net.minecraft.ChatFormatting.YELLOW);
+        }
+        return false;
+    }
+
+    /**
+     * 去容器的路：补货（会翻没登记的附近容器）只走不挖、最多垫 4 块，免得为了地牢箱子挖地；
+     * 存放箱是玩家自己登记的，可以多垫（挖空的坑底要垫柱子才上得来），但还是不挖。
+     */
+    private static List<PathFinder.Step> pathTo(BlockPos c) {
+        return depositing ? BuildController.pathToContainer(c, false, Integer.MAX_VALUE) : BuildController.pathToContainer(c);
+    }
+
+    /** 往箱子里放几组：1 还有要放的，0 放完了，-1 箱子满了 */
+    private static int depositStep(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        AbstractContainerMenu menu = p.containerMenu;
+        Map<Item, Integer> have = counts(p);
+        int clicks = 0;
+        for (Slot s : menu.slots) {
+            if (s.container != p.getInventory() || !s.hasItem()) continue;
+            ItemStack st = s.getItem();
+            if (!canDeposit(have, st)) continue;
+            if (clicks >= 4) return 1;
+            Item it = st.getItem();
+            int before = st.getCount();
+            mc.gameMode.handleInventoryMouseClick(menu.containerId, s.index, 0, ClickType.QUICK_MOVE, p);
+            int after = s.hasItem() && s.getItem().is(it) ? s.getItem().getCount() : 0;
+            if (after == before) return -1; // 一个都放不进去：满了
+            have.merge(it, after - before, Integer::sum);
+            deposited++;
+            clicks++;
+            if (after > 0) return -1; // 只放进去一部分：满了
+        }
+        return clicks > 0 ? 1 : 0;
     }
 
     /** 背包里需要补的：蓝图剩余用量 - 已有 */
@@ -83,7 +237,8 @@ public final class Restocker {
 
     /** 缺料时调用。能出发去补货返回 true；没有可去的箱子返回 false */
     public static boolean start(Minecraft mc) {
-        if (!SupplyManager.any() && !com.autobuilder.ABConfig.SEARCH_CONTAINERS.get() || clock < idleUntil) return false;
+        if (!SupplyManager.any() && !com.autobuilder.ABConfig.SEARCH_CONTAINERS.get() || clock() < idleUntil) return false;
+        if (stage != null && depositing) return true; // 正在去存东西，存完再说
         if (stage == null) {
             TRIED.clear();
             gotSomething = false;
@@ -91,20 +246,22 @@ public final class Restocker {
         }
         computeWant(mc.player);
         if (WANT.isEmpty()) return false;
+        com.autobuilder.Diag.note("缺料，去补货：" + WANT);
         return goNext(mc);
     }
 
     private static boolean goNext(Minecraft mc) {
         LocalPlayer p = mc.player;
+        UNREACHABLE.entrySet().removeIf(e -> e.getValue() <= clock());
         List<BlockPos> order = new ArrayList<>();
         for (BlockPos c : SupplyManager.list()) {
-            if (TRIED.contains(c) || !SupplyManager.isContainer(c)) continue;
+            if (TRIED.contains(c) || UNREACHABLE.containsKey(c) || !SupplyManager.isContainer(c)) continue;
             order.add(c);
         }
         // 没登记的附近容器也去翻一翻（登记的优先）
         if (com.autobuilder.ABConfig.SEARCH_CONTAINERS.get()) {
             for (BlockPos c : SupplyManager.nearby(p.blockPosition(), com.autobuilder.ABConfig.SEARCH_RADIUS.get())) {
-                if (TRIED.contains(c) || order.contains(c)) continue;
+                if (TRIED.contains(c) || UNREACHABLE.containsKey(c) || order.contains(c)) continue;
                 order.add(c);
             }
         }
@@ -132,9 +289,9 @@ public final class Restocker {
                 stageTicks = 0;
                 return true;
             }
-            List<PathFinder.Step> path = BuildController.pathToReach(c);
+            List<PathFinder.Step> path = BuildController.pathToContainer(c);
             if (path == null) {
-                TRIED.add(c);
+                unreachable(c);
                 continue;
             }
             target = c;
@@ -145,8 +302,14 @@ public final class Restocker {
         }
         // 这一轮跑完了
         stage = null;
-        if (!gotSomething) idleUntil = clock + 1200;
+        if (!gotSomething) idleUntil = clock() + 1200;
         return false;
+    }
+
+    private static void unreachable(BlockPos c) {
+        TRIED.add(c);
+        UNREACHABLE.put(c, clock() + 6000);
+        com.autobuilder.Diag.log("容器 {} 走不到（要挖进去或者路被堵死），五分钟内不再去", c);
     }
 
     private static int knownScore(BlockPos c) {
@@ -157,17 +320,23 @@ public final class Restocker {
 
     /** 每 tick 调用；补货结束后 active() 变 false */
     public static void tick(Minecraft mc) {
-        clock++;
         if (stage == null) return;
         LocalPlayer p = mc.player;
         stageTicks++;
         if (++totalTicks > 2400) {
-            AutoBuilder.LOG.info("[AutoBuilder] 补货超时，放弃");
+            AutoBuilder.LOG.info(depositing ? "[AutoBuilder] 存东西超时，放弃" : "[AutoBuilder] 补货超时，放弃");
+            com.autobuilder.Diag.note(depositing ? "存东西超时，放弃" : "补货超时，放弃");
             abort(mc);
             return;
         }
         switch (stage) {
             case GO -> {
+                // 路上要挖的方块（正常不会有：去容器的路不挖）也得有人挖，不然会一直站着等
+                if (BuildController.breaker().active()) {
+                    BuildController.breaker().tick(mc, BuildController.reach());
+                    BuildController.walker().hold();
+                    return;
+                }
                 if (Geometry.distToBlock(p.getEyePosition(), target) <= BuildController.reach() - 0.2 && p.onGround()) {
                     BuildController.walker().clear();
                     stage = Stage.OPEN;
@@ -176,10 +345,10 @@ public final class Restocker {
                     return;
                 }
                 if (!BuildController.walker().hasPath() || stageTicks > 600) {
-                    List<PathFinder.Step> path = BuildController.pathToReach(target);
+                    List<PathFinder.Step> path = pathTo(target);
                     if (path == null || path.isEmpty() && stageTicks > 40) {
-                        TRIED.add(target);
-                        if (!goNext(mc)) stage = null;
+                        unreachable(target);
+                        if (!next(mc)) stage = null;
                         return;
                     }
                     BuildController.walker().setPath(path, target);
@@ -207,28 +376,50 @@ public final class Restocker {
                     stageTicks = 0;
                 } else if (stageTicks > 40) {
                     TRIED.add(target); // 打不开（被挡住、被锁）
-                    if (!goNext(mc)) stage = null;
+                    if (!next(mc)) stage = null;
                 }
             }
             case TRANSFER -> {
                 BuildController.walker().hold();
                 if (p.containerMenu == p.inventoryMenu) { // 被别的东西关掉了
                     TRIED.add(target);
-                    if (!goNext(mc)) stage = null;
+                    if (!next(mc)) stage = null;
                     return;
                 }
                 if (stageTicks < 4) return; // 等箱子内容同步过来
+                if (depositing) {
+                    int r = depositStep(mc);
+                    if (r == 1 && stageTicks < 200) return;
+                    remember(p);
+                    p.closeContainer();
+                    TRIED.add(target);
+                    com.autobuilder.Diag.note("存放箱 " + target.toShortString() + " 存了 " + deposited + " 组" + (r == -1 ? "（箱子满了）" : ""));
+                    // 这个箱子满了、背包里还有要存的：换下一个存放箱
+                    if (r != 0 && hasDeposit(p) && goNextDump(mc)) return;
+                    stage = null;
+                    depositing = false;
+                    return;
+                }
                 if (transferStep(mc) && stageTicks < 200) return;
                 remember(p);
                 p.closeContainer();
                 TRIED.add(target);
                 computeWant(p);
+                com.autobuilder.Diag.note("材料箱 " + target.toShortString() + " 看完了，还缺 " + WANT);
                 if (WANT.isEmpty() || !goNext(mc)) {
                     stage = null;
                     if (gotSomething) BuildController.msg(Lang.t("msg.restocked"), net.minecraft.ChatFormatting.AQUA);
                 }
             }
         }
+    }
+
+    /** 当前模式的下一个箱子 */
+    private static boolean next(Minecraft mc) {
+        if (!depositing) return goNext(mc);
+        if (goNextDump(mc)) return true;
+        depositing = false;
+        return false;
     }
 
     private static void remember(LocalPlayer p) {
